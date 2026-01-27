@@ -1,14 +1,16 @@
+import io
+from datetime import date
+from pathlib import Path
+
 import polars as pl
 from pypdf import PdfReader
-from pathlib import Path
-from datetime import date
-from typing import List, Type, Optional
-from sqlmodel import Session
+from sqlmodel import Session, SQLModel
+
 from app.data_access.database import engine
 
+
 class DataExtractor:
-    """
-    Handles data ingestion from various source formats in the Bronze layer.
+    """Handles data ingestion from various source formats in the Bronze layer.
     
     This class supports structured data (CSV, JSON) and unstructured data (PDF)
     as required by the technical challenge specifications.
@@ -16,41 +18,17 @@ class DataExtractor:
 
     @staticmethod
     def read_csv(file_path: Path) -> pl.DataFrame:
-        """
-        Reads a CSV file into a Polars DataFrame.
-
-        Args:
-            file_path (Path): Path to the source CSV file.
-
-        Returns:
-            pl.DataFrame: The loaded data.
-        """
+        """Reads a CSV file into a Polars DataFrame."""
         return pl.read_csv(file_path)
 
     @staticmethod
     def read_json(file_path: Path) -> pl.DataFrame:
-        """
-        Reads a JSON file into a Polars DataFrame.
-
-        Args:
-            file_path (Path): Path to the source JSON file.
-
-        Returns:
-            pl.DataFrame: The loaded data.
-        """
+        """Reads a JSON file into a Polars DataFrame."""
         return pl.read_json(file_path)
 
     @staticmethod
     def extract_pdf_text(file_path: Path) -> str:
-        """
-        Extracts raw text content from a PDF file for unstructured data processing.
-
-        Args:
-            file_path (Path): Path to the PDF file.
-
-        Returns:
-            str: The extracted text content. Returns an empty string if extraction fails.
-        """
+        """Extracts raw text content from a PDF file for unstructured data processing."""
         try:
             reader = PdfReader(file_path)
             return "".join([page.extract_text() or "" for page in reader.pages])
@@ -58,92 +36,75 @@ class DataExtractor:
             print(f"Error reading PDF {file_path}: {e}")
             return ""
 
+    @staticmethod
+    def convert_text_to_df(raw_text: str, header_identifier: str) -> pl.DataFrame:
+        """Extracts a CSV-like block from raw text and converts it to a Polars DataFrame.
+        Allows treating unstructured PDF content as a structured source in-memory.
+        """
+        try:
+            start_index = raw_text.find(header_identifier)
+            if start_index == -1:
+                return pl.DataFrame()
+
+            csv_content = raw_text[start_index:].strip()
+            return pl.read_csv(io.StringIO(csv_content))
+        except Exception as e:
+            print(f"Error converting text to DataFrame: {e}")
+            return pl.DataFrame()
+
 class DataTransformer:
-    """
-    Implements core ETL transformations using the Polars framework.
+    """Implements core ETL transformations using the Polars framework.
     
-    This class handles the 'Silver Layer' logic, ensuring that raw Bronze data
-    is cleaned, typed correctly for SQLite, and resolved against existing dimensions.
+    Handles the 'Silver Layer' logic, ensuring that raw Bronze data
+    is cleaned and typed correctly for the Cloud Asset Star Schema.
     """
 
     @staticmethod
-    def clean_orders(df: pl.DataFrame) -> pl.DataFrame:
-        """
-        Transforms raw order data by converting date strings to Python date objects.
+    def clean_entities(df: pl.DataFrame) -> pl.DataFrame:
+        """Transforms raw entity data by converting date strings to Python date objects.
 
         Args:
-            df (pl.DataFrame): The raw orders dataframe from the Bronze layer.
+            df (pl.DataFrame): The raw entity dataframe from the Bronze layer.
 
         Returns:
-            pl.DataFrame: The cleaned dataframe with proper date types for SQLite.
+            pl.DataFrame: The cleaned dataframe with proper date types.
         """
-        return df.with_columns(pl.col("order_date").str.to_date())
+        return df.with_columns(pl.col("created_at").str.to_date())
 
     @staticmethod
-    def clean_sales_people(df: pl.DataFrame) -> pl.DataFrame:
-        """
-        Transforms raw salesperson data by converting hire_date strings to date objects.
-
-        Args:
-            df (pl.DataFrame): The raw sales people dataframe.
-
-        Returns:
-            pl.DataFrame: The cleaned dataframe.
-        """
-        return df.with_columns(pl.col("hire_date").str.to_date())
-
-    @staticmethod
-    def resolve_products(products_df: pl.DataFrame, categories_df: pl.DataFrame) -> pl.DataFrame:
-        """
-        Resolves the relationship between Products and Categories.
-
-        Maps the 'category_name' in the product data to the 'id' of the 
-        Category dimension to maintain Star Schema integrity.
-
-        Args:
-            products_df (pl.DataFrame): Raw product data.
-            categories_df (pl.DataFrame): Category dimension data retrieved from SQL.
-
-        Returns:
-            pl.DataFrame: Resolved products containing the surrogate 'category_id'.
-        """
-        return (
-            products_df.join(categories_df, left_on="category_name", right_on="name")
-            .rename({"id": "category_id"})
-            .select(["sku", "name", "description", "price", "category_id", "category_name"])
-        )
+    def clean_metrics(df: pl.DataFrame) -> pl.DataFrame:
+        """Ensures metric data types are correct before loading to SQL."""
+        return df.with_columns([
+            pl.col("cpu_usage_avg").cast(pl.Float64),
+            pl.col("hourly_cost").cast(pl.Float64)
+        ])
 
 class DateDimensionGenerator:
-    """
-    Utility for generating a comprehensive Calendar Table (Date Dimension).
+    """Utility for generating a comprehensive Calendar Table (Date Dimension).
+    Fulfills Optional Feature #1.
     """
 
     @staticmethod
     def generate_range(start_year: int, end_year: int) -> pl.DataFrame:
-        """
-        Generates a DimDate DataFrame with all required analytical columns.
-
-        Fulfills the 'Calendar Table' requirement by providing fields for 
-        year, month, day, quarter, and weekend flags.
-
-        Args:
-            start_year (int): The starting year for the calendar.
-            end_year (int): The ending year for the calendar.
-
-        Returns:
-            pl.DataFrame: A complete date dimension table.
+        """Generates a DimDate DataFrame with Smart IDs (YYYYMMDD)
+        and all required analytical columns.
         """
         start_date = date(start_year, 1, 1)
         end_date = date(end_year, 12, 31)
-        
+
+        # 1. Create the base date range
         df = pl.date_range(
-            start_date, 
-            end_date, 
-            interval="1d", 
+            start_date,
+            end_date,
+            interval="1d",
             eager=True
         ).alias("date_obj").to_frame()
 
+        # 2. Generate columns including the Smart ID
         return df.with_columns([
+            # ID: 2023-01-01 -> 20230101
+            pl.col("date_obj").dt.strftime("%Y%m%d").cast(pl.Int32).alias("id"),
+
             pl.col("date_obj").alias("full_date"),
             pl.col("date_obj").dt.year().alias("year"),
             pl.col("date_obj").dt.month().alias("month"),
@@ -153,28 +114,29 @@ class DateDimensionGenerator:
             pl.col("date_obj").dt.strftime("%A").alias("day_name"),
             pl.col("date_obj").dt.quarter().alias("quarter"),
             pl.col("date_obj").dt.weekday().is_in([6, 7]).alias("is_weekend")
-        ]).drop("date_obj")
+        ]).drop("date_obj").select([
+            "id", "full_date", "year", "month", "month_name",
+            "day", "day_of_week", "day_name", "quarter", "is_weekend"
+        ])
 
 class DataLoader:
-    """
-    Handles the 'Load' phase of the ETL process.
-    """
+    """Handles the 'Load' phase of the ETL process."""
 
     @staticmethod
-    def load_to_sql(df: pl.DataFrame, model_class: Type):
-        """
-        Persists a Polars DataFrame into the SQL Gold Layer using SQLModel.
-
-        Uses bulk insertion for optimized performance during the seeding process.
+    def load_to_sql(df: pl.DataFrame, model_class: type[SQLModel]) -> None:
+        """Persists a Polars DataFrame into the SQL Warehouse using SQLModel.
 
         Args:
             df (pl.DataFrame): The transformed data to load.
-            model_class (Type): The SQLModel class representing the target table.
+            model_class (Type[SQLModel]): The SQLModel class representing the target table.
+        
+        Returns:
+            None
         """
         records = df.to_dicts()
         if not records:
             return
-            
+
         with Session(engine) as session:
             # Efficiently add all records in a single transaction
             session.add_all([model_class(**rec) for rec in records])

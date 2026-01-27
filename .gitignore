@@ -1,0 +1,61 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Environment Variables (CRITICAL) ---
+# Never commit your Gemini API Key or local secrets
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak
+venv.bak
+
+# --- Databases & Data Lake ---
+# Ignore the generated SQLite database
+data/gold/*.db
+data/gold/*.sqlite3
+
+# If you have local logs
+logs/
+*.log
+
+# Typesense local data (if you mapped a volume in Docker)
+typesense-data/
+
+# --- VS Code & IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Poetry ---
+# We keep poetry.lock but ignore the virtualenv if it's inside the project
+.venv/

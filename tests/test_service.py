@@ -1,31 +1,96 @@
-import pytest
-from fastapi import HTTPException
-from app.services.product_service import ProductService
-from sqlmodel import Session, create_engine, SQLModel
+# 1. Standard Library
+from collections.abc import Generator
+from datetime import date
+from typing import Any
 
-# We use an in-memory SQLite for tests so we don't mess up our real warehouse.db
+import pytest
+from pydantic import ValidationError
+
+# 2. Third-Party Libraries
+from sqlmodel import Session, SQLModel, create_engine, text
+
+# Layer 3: Domain Entities
+from app.domain.asset import AssetDomain
+from app.domain.metric_entry import MetricEntryDomain
+
+
+# Setup: In-memory SQLite for isolated testing
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture() -> Generator[Session, Any, None]:
+    """
+    Creates a clean, in-memory database for every test.
+    This ensures tests don't interfere with each other or the real data.
+    """
     engine = create_engine("sqlite:///:memory:")
+    # We use our actual creation logic to ensure the VIEW is also created
     SQLModel.metadata.create_all(engine)
+    # Create the Virtual View for testing Gold Layer logic
+    view_sql = """
+    CREATE VIEW fact_entity_metrics AS
+    SELECT m.id, m.cpu_usage_avg, e.resource_name
+    FROM metric_entry m
+    LEFT JOIN dim_entity e ON m.entity_id = e.id;
+    """
     with Session(engine) as session:
+        session.exec(text(view_sql))
+        session.commit()
         yield session
 
-def test_validate_sku_correct(session: Session):
-    service = ProductService(session)
-    # This should not raise any error
-    service.validate_sku("PROD-1234")
+# --- 1. Testing Entity Domain Logic (Regex & Formatting) ---
 
-def test_validate_sku_incorrect(session: Session):
-    service = ProductService(session)
-    # This SHOULD raise an HTTPException
-    with pytest.raises(HTTPException) as excinfo:
-        service.validate_sku("INVALID-SKU")
-    assert excinfo.value.status_code == 400
-    assert "Invalid SKU format" in excinfo.value.detail
+def test_entity_serial_format_correct() -> None:
+    """Validates that a correctly formatted serial number is accepted."""
+    asset = AssetDomain(
+        resource_name="Test Server",
+        serial_number="RES-A1B2-C3D4", # Correct Format
+        description="Testing unit tests",
+        created_at=date(2024, 1, 1)
+    )
+    assert asset.serial_number == "RES-A1B2-C3D4"
 
-def test_apply_seasonal_discount(session: Session):
-    service = ProductService(session)
-    price = 100.0
-    discounted = service.apply_seasonal_discount(price, 20.0)
-    assert discounted == 80.0
+def test_entity_serial_format_incorrect() -> None:
+    """Validates that malformed serial numbers raise a ValidationError."""
+    with pytest.raises(ValidationError):
+        AssetDomain(
+            resource_name="Test Server",
+            serial_number="INVALID-SERIAL", # Wrong Format
+            description="Testing failure",
+            created_at=date(2024, 1, 1)
+        )
+
+def test_entity_name_cleansing() -> None:
+    """Validates that the model automatically trims and title-cases the name."""
+    asset = AssetDomain(
+        resource_name="  production-db  ",
+        serial_number="RES-SQLD-1234",
+        description="Testing title case",
+        created_at=date(2024, 1, 1)
+    )
+    # Result of .strip().title()
+    assert asset.resource_name == "Production-Db"
+
+# --- 2. Testing Metric Logic (Rounding & Constraints) ---
+
+def test_metric_cost_rounding() -> None:
+    """Validates that hourly cost is rounded to 4 decimal places."""
+    metric = MetricEntryDomain(
+        asset_id=1, provider_id=1, region_id=1, team_id=1,
+        service_type_id=1, date_id=1, environment_id=1,
+        status_id=1, cost_center_id=1, security_tier_id=1,
+        cpu_usage_avg=50.0, memory_usage_avg=8.0,
+        hourly_cost=0.1234567, # Should round
+        uptime_seconds=3600
+    )
+    assert metric.hourly_cost == 0.1235
+
+def test_metric_cpu_usage_constraints() -> None:
+    """Validates that CPU usage cannot exceed 100%."""
+    with pytest.raises(ValidationError):
+        MetricEntryDomain(
+            # ... all IDs ...
+            asset_id=1, provider_id=1, region_id=1, team_id=1,
+            service_type_id=1, date_id=1, environment_id=1,
+            status_id=1, cost_center_id=1, security_tier_id=1,
+            cpu_usage_avg=150.0, # Invalid value (> 100)
+            memory_usage_avg=8.0, hourly_cost=0.1, uptime_seconds=3600
+        )

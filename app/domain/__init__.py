@@ -1,9 +1,35 @@
 # app/domain/__init__.py
 
-from .product import ProductDomain
-from .category import CategoryDomain
-from .sales_person import SalesPersonDomain
-from .store import StoreDomain
-from .customer import CustomerDomain
-from .order import OrderDomain
-from .fact_sales import FactSalesDomain
+# 1. The Anchor Entity
+from .asset import AssetDomain
+
+# 3. Technical & Financial Dimensions
+from .cost_center import CostCenterDomain
+from .environment import EnvironmentDomain
+from .hardware_profile import HardwareProfileDomain
+
+# 4. The Fact/Metric Layer
+from .metric_entry import MetricEntryDomain
+
+# 2. Contextual Dimensions
+from .provider import ProviderDomain
+from .region import RegionDomain
+from .security_tier import SecurityTierDomain
+from .service_type import ServiceTypeDomain
+from .status import StatusDomain
+from .team import TeamDomain
+
+
+__all__ = [
+    "AssetDomain",
+    "CostCenterDomain",
+    "EnvironmentDomain",
+    "HardwareProfileDomain",
+    "MetricEntryDomain",
+    "ProviderDomain",
+    "RegionDomain",
+    "SecurityTierDomain",
+    "ServiceTypeDomain",
+    "StatusDomain",
+    "TeamDomain"
+]

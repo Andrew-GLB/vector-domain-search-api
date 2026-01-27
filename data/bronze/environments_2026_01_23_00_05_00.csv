@@ -1,0 +1,6 @@
+env_name,tier,is_ephemeral,action,source_timestamp
+Production,Mission Critical,False,UPSERT,2026-01-23T00:05:00Z
+Staging,Standard,False,UPSERT,2026-01-23T00:05:00Z
+Development,Low Impact,True,UPSERT,2026-01-23T00:05:00Z
+UAT,Standard,False,UPSERT,2026-01-23T00:05:00Z
+Sandbox,Low Impact,True,UPSERT,2026-01-23T00:05:00Z

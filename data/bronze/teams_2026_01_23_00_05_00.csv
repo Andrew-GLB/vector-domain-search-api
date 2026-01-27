@@ -1,0 +1,13 @@
+team_name,department,lead_email,action,source_timestamp
+DevOps,Engineering,devops-lead@corp.com,UPSERT,2026-01-23T00:05:00Z
+Data-Platform,Engineering,data-lead@corp.com,UPSERT,2026-01-23T00:05:00Z
+Core-API,Engineering,api-mgr@corp.com,UPSERT,2026-01-23T00:05:00Z
+BI-Analytics,Data Science,bi-lead@corp.com,UPSERT,2026-01-23T00:05:00Z
+Customer-App,Marketing,mkt-tech@corp.com,UPSERT,2026-01-23T00:05:00Z
+Finance-Systems,Finance,fin-ops@corp.com,UPSERT,2026-01-23T00:05:00Z
+Security-Ops,IT Security,sec-mgr@corp.com,UPSERT,2026-01-23T00:05:00Z
+Legacy-ERP,IT Operations,it-ops@corp.com,UPSERT,2026-01-23T00:05:00Z
+Mobile-Dev,Engineering,mobile-lead@corp.com,UPSERT,2026-01-23T00:05:00Z
+HR-Tools,Human Resources,hr-tech@corp.com,UPSERT,2026-01-23T00:05:00Z
+Machine-Learning,Data Science,ml-mgr@corp.com,UPSERT,2026-01-23T00:05:00Z
+Cloud-Governance,IT Security,gov-lead@corp.com,UPSERT,2026-01-23T00:05:00Z

@@ -1,0 +1,11 @@
+region_code,display_name,continent,action,source_timestamp
+us-east-1,US East (N. Virginia),North America,UPSERT,2026-01-23T00:05:00Z
+us-west-2,US West (Oregon),North America,UPSERT,2026-01-23T00:05:00Z
+eu-central-1,Europe (Frankfurt),Europe,UPSERT,2026-01-23T00:05:00Z
+eu-west-1,Europe (Ireland),Europe,UPSERT,2026-01-23T00:05:00Z
+ap-southeast-1,Asia Pacific (Singapore),Asia,UPSERT,2026-01-23T00:05:00Z
+ap-northeast-1,Asia Pacific (Tokyo),Asia,UPSERT,2026-01-23T00:05:00Z
+sa-east-1,South America (Sao Paulo),South America,UPSERT,2026-01-23T00:05:00Z
+ca-central-1,Canada (Central),North America,UPSERT,2026-01-23T00:05:00Z
+af-south-1,Africa (Cape Town),Africa,UPSERT,2026-01-23T00:05:00Z
+me-south-1,Middle East (Bahrain),Middle East,UPSERT,2026-01-23T00:05:00Z

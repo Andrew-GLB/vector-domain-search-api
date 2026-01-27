@@ -1,0 +1,26 @@
+resource_name,serial_number,description,created_at,action,source_timestamp
+Production-Web-Server-01,RES-WWEB-0001,Main customer-facing web engine.,2023-01-10,UPSERT,2026-01-23T00:05:00Z
+Production-Web-Server-02,RES-WWEB-0002,Secondary load-balanced web engine.,2023-01-10,UPSERT,2026-01-23T00:05:00Z
+User-Primary-DB,RES-SQLD-1001,Master SQL instance for user profiles.,2023-02-15,UPSERT,2026-01-23T00:05:00Z
+User-Replica-DB,RES-SQLD-1002,Read-only replica for analytics.,2023-02-16,UPSERT,2026-01-23T00:05:00Z
+Static-Assets-Bucket,RES-STOB-5501,S3 bucket for images and CSS.,2022-12-01,UPSERT,2026-01-23T00:05:00Z
+Auth-Service-Lambda,RES-FUNL-2020,Serverless function for JWT auth.,2023-03-05,UPSERT,2026-01-23T00:05:00Z
+Billing-API-Gateway,RES-NETW-8811,Entry point for financial endpoints.,2023-04-12,UPSERT,2026-01-23T00:05:00Z
+Data-Warehouse-Redshift,RES-DWHS-0099,Main OLAP cluster for BI.,2023-05-20,UPSERT,2026-01-23T00:05:00Z
+Staging-App-Server,RES-SAPP-1122,Pre-production testing instance.,2023-06-01,UPSERT,2026-01-23T00:05:00Z
+Finance-Report-Generator,RES-FUNL-3030,Batch process for month-end reports.,2023-06-15,UPSERT,2026-01-23T00:05:00Z
+Internal-Wiki-VM,RES-WWEB-9090,Internal knowledge base server.,2022-11-20,UPSERT,2026-01-23T00:05:00Z
+Security-Log-Storage,RES-STOB-4422,Encrypted bucket for audit trails.,2023-01-05,UPSERT,2026-01-23T00:05:00Z
+Network-Edge-WAF,RES-SECU-1111,Firewall protecting the core API.,2023-02-01,UPSERT,2026-01-23T00:05:00Z
+Mobile-Push-Notification,RES-FUNL-7788,Service for app push alerts.,2023-07-10,UPSERT,2026-01-23T00:05:00Z
+Dev-Sandox-Compute-01,RES-WWEB-2233,Experimental instance for R&D.,2024-01-05,UPSERT,2026-01-23T00:05:00Z
+Marketing-Analytics-DB,RES-SQLD-4455,Database for campaign tracking.,2023-08-12,UPSERT,2026-01-23T00:05:00Z
+Global-CDN-Dist,RES-NETW-3344,Edge delivery for global users.,2023-03-25,UPSERT,2026-01-23T00:05:00Z
+HR-Portal-Frontend,RES-SAPP-6677,Internal HR dashboard.,2023-09-01,UPSERT,2026-01-23T00:05:00Z
+Logging-Elastic-Search,RES-DWHS-7788,Centralized log indexing cluster.,2023-10-15,UPSERT,2026-01-23T00:05:00Z
+Invoicing-Storage,RES-STOB-9911,Storage for customer PDF invoices.,2023-04-30,UPSERT,2026-01-23T00:05:00Z
+Training-ML-Node,RES-WWEB-5566,GPU instance for model training.,2023-11-05,UPSERT,2026-01-23T00:05:00Z
+Backup-Vault-Offline,RES-STOB-0000,Glacier-style deep archive storage.,2022-10-10,UPSERT,2026-01-23T00:05:00Z
+VPN-Gateway-HQ,RES-NETW-5555,Secure tunnel for corporate office.,2023-01-20,UPSERT,2026-01-23T00:05:00Z
+Customer-Support-API,RES-WWEB-3399,Backend for support ticketing.,2023-12-12,UPSERT,2026-01-23T00:05:00Z
+Reporting-BI-Node,RES-SAPP-4400,Server for hosting Metabase/Tableau.,2024-01-02,UPSERT,2026-01-23T00:05:00Z

@@ -1,0 +1,6 @@
+status_name,is_billable,description,action,source_timestamp
+ACTIVE,True,Resource is running and consuming compute cycles.,UPSERT,2026-01-23T00:05:00Z
+STOPPED,False,Resource is powered off but may incur storage costs.,UPSERT,2026-01-23T00:05:00Z
+MAINTENANCE,True,Resource is undergoing updates or patching.,UPSERT,2026-01-23T00:05:00Z
+TERMINATED,False,Resource is marked for deletion.,UPSERT,2026-01-23T00:05:00Z
+PENDING,True,Resource is in the process of provisioning.,UPSERT,2026-01-23T00:05:00Z
