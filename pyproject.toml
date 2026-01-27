@@ -123,3 +123,7 @@ docstring-code-format = true
 # Groups imports logically
 combine-as-imports = true
 lines-after-imports = 2
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+ignore-fully-untyped = false # Set to true if you want to be very strict

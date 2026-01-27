@@ -1,4 +1,5 @@
-flowchart TD
+```mermaid
+graph TD
     subgraph Client_Layer ["External"]
         User["REST Client / Postman"]
     end
@@ -17,10 +18,11 @@ flowchart TD
     end
 
     subgraph Infrastructure ["Storage Layer"]
-        DA --> DB[("SQLite Database")]
+        DA --> DB[("Supabase Database")]
         S --> VDB[("Typesense Vector DB")]
         S --> AI["Google Gemini API"]
     end
 
     style D fill:#dfd
     style DA fill:#fdd
+```
