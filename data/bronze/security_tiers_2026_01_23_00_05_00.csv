@@ -1,5 +1,0 @@
-tier_name,encryption_required,compliance_standard,action,source_timestamp
-Public,False,NONE,UPSERT,2026-01-23T00:05:00Z
-Internal,True,ISO27001,UPSERT,2026-01-23T00:05:00Z
-Confidential,True,SOC2,UPSERT,2026-01-23T00:05:00Z
-Restricted,True,GDPR/HIPAA,UPSERT,2026-01-23T00:05:00Z
