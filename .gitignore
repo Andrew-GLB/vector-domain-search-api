@@ -62,3 +62,6 @@ desktop.ini
 
 # DVC tracked data
 /data/bronze
+
+# Typesense data directory
+typesense-data/

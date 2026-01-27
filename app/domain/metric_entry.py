@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -35,23 +37,33 @@ class MetricEntryDomain(BaseModel):
     hourly_cost: float = Field(..., description="Financial cost per hour of operation", ge=0)
     uptime_seconds: int = Field(..., description="Total seconds of operation in the interval", ge=0)
 
+    # Metadata (Crucial for Silver Layer)
+    source_timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="The moment the metric was ingested"
+    )
+
     @field_validator('hourly_cost')
     @classmethod
     def format_cost(cls, v: float) -> float:
-        """Ensures cost precision to 4 decimal places."""
         return round(v, 4)
 
+    def to_searchable_text(self) -> str:
+        """Helper to create a string for Vector DB embedding.
+        Uses IDs for now, but in the Service Layer, you'd map these to names.
+        """
+        return f"Asset:{self.asset_id} Team:{self.team_id} Type:{self.service_type_id}"
+
     model_config = {
+        "from_attributes": True, # Allows easy conversion from SQLModel
         "json_schema_extra": {
             "example": {
                 "asset_id": 1, "provider_id": 1, "region_id": 1,
-                "team_id": 1, "service_type_id": 1, "date_id": 20240101,
+                "team_id": 1, "service_type_id": 1, "date_id": 20260127,
                 "environment_id": 1, "status_id": 1, "cost_center_id": 1,
-                "security_tier_id": 1,
-                "cpu_usage_avg": 24.5,
-                "memory_usage_avg": 4.0,
-                "hourly_cost": 0.085,
-                "uptime_seconds": 3600
+                "security_tier_id": 1, "hardware_profile_id": 1,
+                "cpu_usage_avg": 24.5, "memory_usage_avg": 4.0,
+                "hourly_cost": 0.085, "uptime_seconds": 3600
             }
         }
     }

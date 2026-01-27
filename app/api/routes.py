@@ -1105,26 +1105,26 @@ def delete_metrics_batch(
 
 # --- 6. GOLD LAYER ANALYTICS (Querying the Virtual View) ---
 
-@router.get("/gold/fact-metrics", tags=["Gold Layer"])
-def get_complete_fact_view(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)],
-    limit: int = 100
-) -> list[FactAssetMetrics]:
-    """Requirement: Querying Gold Layer.
-    Queries the 10-dimension SQL View for combined business context.
-    """
-    service = MetricService(session)
-    return service.get_gold_fact_view(limit=limit)
+# @router.get("/gold/fact-metrics", tags=["Gold Layer"])
+# def get_complete_fact_view(
+#     session: Annotated[Session, Depends(get_session)],
+#     username: Annotated[str, Depends(authenticate)],
+#     limit: int = 100
+# ) -> list[FactAssetMetrics]:
+#     """Requirement: Querying Gold Layer.
+#     Queries the 10-dimension SQL View for combined business context.
+#     """
+#     service = MetricService(session)
+#     return service.get_gold_fact_view(limit=limit)
 
-@router.get("/gold/cost-by-category", tags=["Gold Layer"])
-def get_cost_summary(session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)])  -> list[dict[str, Any]]:
-    """Analytical Query: Refines facts to show spend by Service Category."""
-    service = MetricService(session)
-    return service.get_cost_summary_gold()
+# @router.get("/gold/cost-by-category", tags=["Gold Layer"])
+# def get_cost_summary(session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)])  -> list[dict[str, Any]]:
+#     """Analytical Query: Refines facts to show spend by Service Category."""
+#     service = MetricService(session)
+#     return service.get_cost_summary_gold()
 
-@router.get("/gold/budget-report", tags=["Gold Layer"])
-def get_budget_report(session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)]) -> list[dict[str, Any]]:
-    """Analytical Query: Refines financial dimensions for budget tracking."""
-    service = CostCenterService(session)
-    return service.get_budget_utilization_report()
+# @router.get("/gold/budget-report", tags=["Gold Layer"])
+# def get_budget_report(session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)]) -> list[dict[str, Any]]:
+#     """Analytical Query: Refines financial dimensions for budget tracking."""
+#     service = CostCenterService(session)
+#     return service.get_budget_utilization_report()

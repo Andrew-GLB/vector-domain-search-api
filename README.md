@@ -7,7 +7,7 @@ graph TD
     subgraph FastAPI_Application ["Application Layer"]
         direction TB
         R["API: Routes"] --> S["Services: Business Logic"]
-        
+         and 
         subgraph Entities ["Domain vs Data Access"]
             D["Domain: Pydantic Models"]
             DA["Data Access: SQLModels"]
