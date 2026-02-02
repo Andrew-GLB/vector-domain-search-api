@@ -57,7 +57,7 @@ class SearchService:
                 # Core Data
                 {"name": "center_code", "type": "string", "facet": True},
                 {"name": "department", "type": "string", "facet": True},
-                {"name": "budget_limit", "type": "float"}, # Corrected to float for decimal precision
+                {"name": "budget_limit", "type": "float", "facet": True}, # Corrected to float for decimal precision
 
                 # Pipeline Metadata
                 {"name": "is_active", "type": "bool", "facet": True},
@@ -257,7 +257,7 @@ class SearchService:
             "ProviderDomain": "provider_name",
             "RegionDomain": "region_code,region_name",
             "SecurityTierDomain": "tier_name",
-            "ServiceTypeDomain": "service_name",
+            "ServiceTypeDomain": "service_name,category",
             "StatusDomain": "status_name",
             "TeamDomain": "team_name,lead_name"
         }

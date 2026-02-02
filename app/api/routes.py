@@ -9,8 +9,8 @@ from app.api.auth import authenticate
 
 # Layer 4: Data Access (Session)
 from app.data_access.database import get_session
-from app.data_access.models import FactAssetMetrics
 
+#from app.data_access.models import FactAssetMetrics
 # Layer 3: Domain Entities (Pydantic models)
 from app.domain import (
     AssetDomain,
@@ -25,6 +25,13 @@ from app.domain import (
     StatusDomain,
     TeamDomain,
 )
+from app.domain.gold_entities import (
+    AssetMetricContext,
+    AssetUtilization,
+    ResourceEfficiency,
+    SecurityCompliance,
+    TeamCost,
+)
 
 # Layer 2: Services
 from app.services.asset_service import AssetService
@@ -34,6 +41,7 @@ from app.services.hardware_profile_service import HardwareProfileService
 from app.services.metric_service import MetricService
 from app.services.provider_service import ProviderService
 from app.services.region_service import RegionService
+from app.services.search_gold import GoldSearchService
 from app.services.search_service import SearchService
 from app.services.security_tier_service import SecurityTierService
 from app.services.seed_service import SeedService
@@ -93,8 +101,92 @@ def global_search(
     return service.global_search(query_text=q)
 
 
+# --- GOLD LAYER ANALYTICS (Querying the Virtual View) ---
+@router.get("/comprehensive-metrics", tags=["Gold Layer - Analytics"])
+def read_comprehensive_metrics(
+    session: Annotated[Session, Depends(get_session)],
+    provider_name: Annotated[
+        str, 
+        Query(
+            description="Select a category to filter resources. Use '--' to see all rows.",
+            enum=["--", "AWS", "AZURE", "GCP", "ON-PREMISE"]
+        )
+    ] = "--",
+    username: Annotated[str, Depends(authenticate)] = None
+) -> list[AssetMetricContext]:
+    """Retrieve fully enriched asset metrics.
+    This endpoint queries a 10-way join across Assets, Teams, Providers,
+    Regions, Environments, and Security tiers.
+    """
+    # Defensive check for MyPy to ensure session exists
+    if session is None:
+        raise RuntimeError("Database session not available")
+    
+    service = GoldSearchService(session)
+    return service.read_comprehensive_metrics(provider_name=provider_name)
+
+@router.get("/assets/utilization", tags=["Gold Layer - Analytics"])
+def search_assets_utilization(
+    session: Annotated[Session, Depends(get_session)],
+    provider_name: Annotated[
+        str, 
+        Query(
+            description="Select a category to filter resources. Use '--' to see all rows.",
+            enum=["--", "AWS", "AZURE", "GCP", "ON-PREMISE"]
+        )
+    ] = "--",
+    username: Annotated[str, Depends(authenticate)] = None
+) -> list[AssetUtilization]:
+    """Search asset utilization data."""
+    # Note: Added check for session to satisfy MyPy since it's Optional  
+    service = GoldSearchService(session)
+    return service.search_assets_utilization(provider_name=provider_name)
+
+@router.get("/costs/team-report", tags=["Gold Layer - Analytics"])
+def get_team_costs(
+    session: Annotated[Session, Depends(get_session)],
+    username: Annotated[str, Depends(authenticate)] = None
+) -> list[TeamCost]:
+    """Monthly cloud spend rollup by department or team for chargeback reporting."""
+    service = GoldSearchService(session)
+    return service.get_team_cost_report()
+        
+
+@router.get("/security/compliance", tags=["Gold Layer - Analytics"])
+def get_security_posture(
+    session: Annotated[Session, Depends(get_session)],
+    username: Annotated[str, Depends(authenticate)] = None
+) -> list[SecurityCompliance]:
+    """
+    Identifies 'Mission Critical' assets in 'Production' that need immediate attention.
+    This report identifies assets currently in Stopped, Maintenance, or Terminated states.
+    """
+    service = GoldSearchService(session)
+    return service.search_security_risks()
+
+@router.get("/efficiency/waste-analysis", tags=["Gold Layer - Analytics"])
+def get_efficiency(
+    session: Annotated[Session, Depends(get_session)],
+    waste_category: Annotated[
+        str, 
+        Query(
+            description="Select a category to filter resources. Use '--' to see all rows.",
+            enum=["--", "High Waste", "Potential Waste", "Optimized", "Normal"]
+        )
+    ] = "--",
+    username: Annotated[str, Depends(authenticate)] = None
+) -> list[ResourceEfficiency]:
+    """
+    Retrieves assets with pre-calculated efficiency scores and waste indexing.
+    - **--**: Fetches all results without filtering.
+    - **High Waste**: Resources with < 5% CPU and > $100 cost.
+    """
+    service = GoldSearchService(session)
+    return service.get_efficiency_metrics(waste_category=waste_category)
+
+
 # --- ASSET MANAGEMENT (CRUD + BATCH) ---
-@router.post("/assets/", tags=["Assets"], status_code=status.HTTP_201_CREATED)
+@router.post("/assets/", tags=["Dimensions - Assets"], status_code=status.HTTP_201_CREATED)
 def create_asset(
     data: AssetDomain,
     session: Annotated[Session, Depends(get_session)],
@@ -1103,28 +1195,3 @@ def delete_metrics_batch(
     return None
 
 
-# --- 6. GOLD LAYER ANALYTICS (Querying the Virtual View) ---
-
-# @router.get("/gold/fact-metrics", tags=["Gold Layer"])
-# def get_complete_fact_view(
-#     session: Annotated[Session, Depends(get_session)],
-#     username: Annotated[str, Depends(authenticate)],
-#     limit: int = 100
-# ) -> list[FactAssetMetrics]:
-#     """Requirement: Querying Gold Layer.
-#     Queries the 10-dimension SQL View for combined business context.
-#     """
-#     service = MetricService(session)
-#     return service.get_gold_fact_view(limit=limit)
-
-# @router.get("/gold/cost-by-category", tags=["Gold Layer"])
-# def get_cost_summary(session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)])  -> list[dict[str, Any]]:
-#     """Analytical Query: Refines facts to show spend by Service Category."""
-#     service = MetricService(session)
-#     return service.get_cost_summary_gold()
-
-# @router.get("/gold/budget-report", tags=["Gold Layer"])
-# def get_budget_report(session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)]) -> list[dict[str, Any]]:
-#     """Analytical Query: Refines financial dimensions for budget tracking."""
-#     service = CostCenterService(session)
-#     return service.get_budget_utilization_report()

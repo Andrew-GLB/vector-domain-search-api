@@ -1,78 +1,62 @@
 import json
 import os
 import time
+from typing import Any, cast
 
-import typesense
 from dotenv import load_dotenv
-from typesense import Client
+from typesense.client import Client
 
 
 load_dotenv()
 
 def get_typesense_client() -> Client:
-    """Returns an initialized Typesense client."""
-    return typesense.Client({
+    """Returns an initialized Typesense client.
+    Validates that required environment variables are present to satisfy MyPy.
+    """
+    host = os.getenv('TYPESENSE_HOST')
+    port_str = os.getenv('TYPESENSE_PORT')
+    protocol = os.getenv('TYPESENSE_PROTOCOL')
+    api_key = os.getenv('TYPESENSE_API_KEY')
+    timeout_str = os.getenv('TYPESENSE_TIMEOUT')
+
+    # Explicit check to narrow types from Optional[str] to str
+    if not all([host, port_str, protocol, api_key, timeout_str]):
+        raise ValueError("One or more TYPESENSE environment variables are missing.")
+
+    # These casts are now safe because of the check above
+    # We cast the entire dict to Any to satisfy the strict 'ConfigDict' requirement
+    return Client(cast(Any, {
         'nodes': [{
-            'host': os.getenv('TYPESENSE_HOST'),
-            'port': int(os.getenv('TYPESENSE_PORT')), # Must be int
-            'protocol': os.getenv('TYPESENSE_PROTOCOL')
+            'host': host,
+            'port': int(cast(str, port_str)),
+            'protocol': protocol
         }],
-        'api_key': os.getenv('TYPESENSE_API_KEY'),
-        'connection_timeout_seconds': int(os.getenv('TYPESENSE_TIMEOUT'))
-    })
+        'api_key': api_key,
+        'connection_timeout_seconds': int(cast(str, timeout_str))
+    }))
 
 def wait_for_typesense(client: Client, retries: int = 12, delay: int = 5) -> bool:
-    """Polls the Typesense service until it becomes healthy or retries are exhausted.
-
-    This function attempts to connect to the Typesense instance by checking its
-    health status. If the server is unreachable or returning an initialization error,
-    it waits for a specified delay before retrying.
-
-    Args:
-        client: An initialized Typesense client instance.
-        retries: The maximum number of connection attempts to make. Defaults to 12.
-        delay: The time in seconds to wait between retry attempts. Defaults to 5.
-
-    Returns:
-        bool: True if the service returns a healthy status, False if all retries fail.
-
-    Note:
-        The connection endpoint is determined by the 'TYPESENSE_HOST' environment
-        variable. This function will log status messages and errors directly to
-        the console for monitoring during the startup sequence.
-    """
-    print(f"--- Connecting to Typesense at {os.getenv('TYPESENSE_HOST')} ---")
+    """Polls the Typesense service until it becomes healthy."""
+    host = os.getenv('TYPESENSE_HOST') or "Unknown Host"
+    print(f"--- Connecting to Typesense at {host} ---")
+    
     for attempt in range(1, retries + 1):
         try:
-            status = client.operations.is_healthy()
-            if status:
+            if client.operations.is_healthy():
                 print("✅ Typesense is READY.")
                 return True
         except Exception as e:
-            print(f"⚠️ Attempt {attempt}: Server is up but initializing (503)...")
+            print(f"⚠️ Attempt {attempt}: Server is initializing or unreachable...")
             print(f"🔥 Error: {e}")
             time.sleep(delay)
     return False
 
 def inspect_typesense() -> None:
-    """Retrieves and displays the schema and document previews for all Typesense collections.
-
-    This function attempts to connect to the Typesense server, lists all available
-    collections, and prints the document count for each. For non-empty collections,
-    it exports and prints a JSON-formatted preview of the first five documents.
-
-    Note:
-        This function requires the Typesense server to be reachable and assumes
-        `get_typesense_client()` and `wait_for_typesense()` are correctly configured.
-
-    Raises:
-        json.JSONDecodeError: If the document export from Typesense returns invalid JSON.
-        Exception: Catches and prints any connection or API errors during the
-            inspection process.
-    """
+    """Retrieves and displays the schema and document previews for all collections."""
     client = get_typesense_client()
 
     if not wait_for_typesense(client):
+        print("❌ Could not connect to Typesense. Exiting.")
         return
 
     try:
@@ -84,13 +68,15 @@ def inspect_typesense() -> None:
         for collection in collections:
             name = collection['name']
             count = collection['num_documents']
+            
             print(f"\n📂 Collection: '{name}' | 📄 Total Documents: {count}")
 
             if count > 0:
                 print("--- Previewing first 5 documents ---")
-                # Use export with a limit to avoid flooding the terminal
+                
+                # Cast the params to Any to satisfy 'DocumentExportParameters'
                 export_params = {'limit': 5}
-                documents = client.collections[name].documents.export(export_params)
+                documents = client.collections[name].documents.export(cast(Any, export_params))
 
                 for line in documents.strip().split('\n'):
                     if line:
