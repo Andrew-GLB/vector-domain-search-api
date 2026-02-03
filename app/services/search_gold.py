@@ -1,8 +1,7 @@
 import logging
-from typing import List, Optional
 
 from fastapi import HTTPException, status
-from sqlmodel import Session, and_, col, or_, select
+from sqlmodel import Session, select
 
 # Layer 4: Data Access
 from app.data_access.m_views import (
@@ -21,6 +20,7 @@ from app.domain.gold_entities import (
     SecurityCompliance,
     TeamCost,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +53,9 @@ class GoldSearchService:
 
     def read_comprehensive_metrics(
         self,
-        provider_name: Optional[str] = None,
-    ) -> List[AssetMetricContext]:
-        """
-        Retrieves fully enriched asset metrics from the 10-way join view.
+        provider_name: str | None = None,
+    ) -> list[AssetMetricContext]:
+        """Retrieves fully enriched asset metrics from the 10-way join view.
         Provides robust multi-dimensional filtering for comprehensive reporting.
         """
         try:
@@ -88,8 +87,8 @@ class GoldSearchService:
 
     def search_assets_utilization(
         self,
-        provider_name: Optional[str] = None,  
-    ) -> List[AssetUtilization]:
+        provider_name: str | None = None,
+    ) -> list[AssetUtilization]:
         """Filters asset utilization based on provider or all resources."""
         try:
             statement = select(AssetUtilizationMView)
@@ -106,7 +105,7 @@ class GoldSearchService:
                 detail="Database error while fetching assets utilization."
             )
 
-    def get_team_cost_report(self) -> List[TeamCost]:
+    def get_team_cost_report(self) -> list[TeamCost]:
         """Chargeback reporting rolled up by team or department."""
         try:
             statement = select(TeamCostMView)
@@ -119,7 +118,7 @@ class GoldSearchService:
                 detail="Database error while fetching team cost report."
             )
 
-    def search_security_risks(self) -> List[SecurityCompliance]:
+    def search_security_risks(self) -> list[SecurityCompliance]:
         """Retrieves critical assets that are vulnerable/inactive based on view DDL."""
         try:
             statement = select(SecurityComplianceMView)
@@ -133,10 +132,10 @@ class GoldSearchService:
             )
 
     def get_efficiency_metrics(
-        self, 
-        waste_category: Optional[str] = None,
+        self,
+        waste_category: str | None = None,
         limit: int = 100
-    ) -> List[ResourceEfficiency]:
+    ) -> list[ResourceEfficiency]:
         """Identifies efficiency status. Correctly handles row conversion failures."""
         try:
             statement = select(ResourceEfficiencyMView)

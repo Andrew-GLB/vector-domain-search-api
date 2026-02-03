@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="Vector Domain Search API",
     description="A layered architecture API for vector-based search using Typesense and SQLModel",
-    version="1.0.0",
+    version="0.2.0",
     lifespan=lifespan
 )
 

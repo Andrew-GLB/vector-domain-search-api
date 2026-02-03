@@ -1,6 +1,9 @@
+[tool.poetry]
+package-mode = false
+
 [project]
 name = "vector-domain-search-api"
-version = "0.1.0"
+version = "0.2.0"
 description = ""
 authors = [
     {name = "Andrew-GLB",email = "andrexcobar@gmail.com"}

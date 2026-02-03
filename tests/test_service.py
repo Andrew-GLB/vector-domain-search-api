@@ -49,7 +49,7 @@ def session_fixture() -> Generator[Session, Any, None]:
 def test_asset_utilization_valid_data() -> None:
     """Validates that a correctly formed AssetUtilization object is accepted."""
     asset = AssetUtilization(
-        asset_id=1,
+        metric_id=1,
         full_date=date(2023, 10, 27),
         resource_name="prod-sql-01",
         serial_number="SN-12345",
@@ -81,7 +81,7 @@ def test_asset_cost_non_negative() -> None:
     """Validates that cost cannot be negative."""
     with pytest.raises(ValidationError):
         AssetUtilization(
-            asset_id=1, full_date=date.today(), resource_name="Test",
+            metric_id=1, full_date=date.today(), resource_name="Test",
             serial_number="S1", provider_name="AWS", team_name="IT",
             center_code="C1", cpu_usage_avg=10, memory_usage_avg=10,
             daily_cost=-100.0  # INVALID: negative cost
@@ -109,11 +109,8 @@ def test_get_comprehensive_asset_metrics_service(session: Session) -> None:
     session.commit()
 
     # 2. Execute service call
-    results = GoldSearchService.get_comprehensive_asset_metrics(
-        session=session,
-        search_query="target",
-        env="Production"
-    )
+    service = GoldSearchService(session)
+    results = service.read_comprehensive_metrics(provider_name="Azure")
 
     # 3. Assertions
     assert len(results) == 1
@@ -121,3 +118,4 @@ def test_get_comprehensive_asset_metrics_service(session: Session) -> None:
     assert results[0].team_name == "Analytics"
     # Verify Pydantic conversion worked
     assert isinstance(results[0], AssetMetricContext)
+

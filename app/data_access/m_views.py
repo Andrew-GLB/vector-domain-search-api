@@ -1,5 +1,4 @@
 from datetime import date, datetime
-from typing import Optional
 
 from sqlmodel import Field, SQLModel
 
@@ -15,7 +14,7 @@ class FactAssetMetricsMView(SQLModel, table=True):
     asset_id: int
     resource_name: str
     serial_number: str
-    provider_name: Optional[str] = Field(default=None, description="Mapped from silver.dim_provider")
+    provider_name: str | None = Field(default=None, description="Mapped from silver.dim_provider")
     hardware_spec: str
     region_code: str
     team_name: str

@@ -1,5 +1,4 @@
 from datetime import date, datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -21,7 +20,7 @@ class AssetMetricContext(BaseDomainModel):
     serial_number: str
      
     # Dimensions Details
-    provider_name: Optional[str] = Field(default=None, description="Mapped from silver.dim_provider")
+    provider_name: str | None = Field(default=None, description="Mapped from silver.dim_provider")
     hardware_spec: str = Field(..., description="Mapped from silver.dim_hardware_profile")
     region_code: str = Field(..., description="Mapped from silver.dim_region")
     team_name: str = Field(..., description="Mapped from silver.dim_team")

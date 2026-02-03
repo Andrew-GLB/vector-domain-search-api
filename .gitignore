@@ -59,6 +59,7 @@ desktop.ini
 # --- Poetry ---
 # We keep poetry.lock but ignore the virtualenv if it's inside the project
 .venv/
+dist/
 
 # DVC tracked data
 /data/bronze

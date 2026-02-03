@@ -105,14 +105,14 @@ def global_search(
 @router.get("/comprehensive-metrics", tags=["Gold Layer - Analytics"])
 def read_comprehensive_metrics(
     session: Annotated[Session, Depends(get_session)],
+    username: Annotated[str, Depends(authenticate)],
     provider_name: Annotated[
-        str, 
+        str,
         Query(
             description="Select a category to filter resources. Use '--' to see all rows.",
             enum=["--", "AWS", "AZURE", "GCP", "ON-PREMISE"]
         )
-    ] = "--",
-    username: Annotated[str, Depends(authenticate)] = None
+    ] = "--"
 ) -> list[AssetMetricContext]:
     """Retrieve fully enriched asset metrics.
     This endpoint queries a 10-way join across Assets, Teams, Providers,
@@ -128,24 +128,24 @@ def read_comprehensive_metrics(
 @router.get("/assets/utilization", tags=["Gold Layer - Analytics"])
 def search_assets_utilization(
     session: Annotated[Session, Depends(get_session)],
+    username: Annotated[str, Depends(authenticate)],
     provider_name: Annotated[
-        str, 
+        str,
         Query(
             description="Select a category to filter resources. Use '--' to see all rows.",
             enum=["--", "AWS", "AZURE", "GCP", "ON-PREMISE"]
         )
-    ] = "--",
-    username: Annotated[str, Depends(authenticate)] = None
+    ] = "--"
 ) -> list[AssetUtilization]:
     """Search asset utilization data."""
-    # Note: Added check for session to satisfy MyPy since it's Optional  
+    # Note: Added check for session to satisfy MyPy since it's Optional
     service = GoldSearchService(session)
     return service.search_assets_utilization(provider_name=provider_name)
 
 @router.get("/costs/team-report", tags=["Gold Layer - Analytics"])
 def get_team_costs(
     session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)] = None
+    username: Annotated[str, Depends(authenticate)]
 ) -> list[TeamCost]:
     """Monthly cloud spend rollup by department or team for chargeback reporting."""
     service = GoldSearchService(session)
@@ -155,10 +155,9 @@ def get_team_costs(
 @router.get("/security/compliance", tags=["Gold Layer - Analytics"])
 def get_security_posture(
     session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)] = None
+    username: Annotated[str, Depends(authenticate)]
 ) -> list[SecurityCompliance]:
-    """
-    Identifies 'Mission Critical' assets in 'Production' that need immediate attention.
+    """Identifies 'Mission Critical' assets in 'Production' that need immediate attention.
     This report identifies assets currently in Stopped, Maintenance, or Terminated states.
     """
     service = GoldSearchService(session)
@@ -167,17 +166,16 @@ def get_security_posture(
 @router.get("/efficiency/waste-analysis", tags=["Gold Layer - Analytics"])
 def get_efficiency(
     session: Annotated[Session, Depends(get_session)],
+    username: Annotated[str, Depends(authenticate)],
     waste_category: Annotated[
-        str, 
+        str,
         Query(
             description="Select a category to filter resources. Use '--' to see all rows.",
             enum=["--", "High Waste", "Potential Waste", "Optimized", "Normal"]
         )
-    ] = "--",
-    username: Annotated[str, Depends(authenticate)] = None
+    ] = "--"
 ) -> list[ResourceEfficiency]:
-    """
-    Retrieves assets with pre-calculated efficiency scores and waste indexing.
+    """Retrieves assets with pre-calculated efficiency scores and waste indexing.
     - **--**: Fetches all results without filtering.
     - **High Waste**: Resources with < 5% CPU and > $100 cost.
     """
