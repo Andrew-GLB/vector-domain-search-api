@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlmodel import Session, col, select
@@ -17,8 +17,8 @@ class StatusService:
     """Service layer for managing Operational Status dimensions.
 
     This service coordinates the lifecycle of operational states, ensuring
-    that status names are standardized and providing refined health reports
-    for the Gold Layer.
+    standardized status naming and providing refined health reports
+    for the Gold Layer of the Medallion Architecture.
     """
 
     def __init__(self, session: Session) -> None:
@@ -38,292 +38,321 @@ class StatusService:
         Returns:
             StatusDomain: The Pydantic domain representation.
         """
-        return StatusDomain(
-            status_name=db_status.status_name,
-            is_billable=db_status.is_billable,
-            description=db_status.description
-        )
+        return StatusDomain.model_validate(db_status)
 
-    def _get_dim_status_or_404(self, status_id: int) -> DimStatus:
-        """Internal helper to retrieve a status record or raise a 404 error.
+    def _get_dim_status_or_404(self, id: int) -> DimStatus:
+        """Internal helper to retrieve an active status or raise 404.
 
         Args:
-            status_id (int): The primary key ID.
+            id (int): The primary key ID.
 
         Returns:
-            DimStatus: The database record found.
+            DimStatus: The database record.
 
         Raises:
-            HTTPException: 404 status if the ID does not exist.
+            HTTPException: 404 status if not found or inactive.
         """
-        status_obj = self.session.get(DimStatus, status_id)
+        # 1. Fetch record ensuring it is currently active
+        statement = select(DimStatus).where(
+            DimStatus.id == id,
+            col(DimStatus.is_active)
+        )
+        status_obj = self.session.exec(statement).first()
+
+        # 2. Raise 404 if record is missing or soft-deleted
         if not status_obj:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Status with ID {status_id} not found."
+                detail=f"Status with ID {id} not found."
             )
         return status_obj
 
+    # --- 1. create_status ---
     def create_status(self, status_in: StatusDomain) -> StatusDomain:
-        """Validates business rules and persists a new operational status.
+        """Full CRUD: Validates business rules and persists a new operational status.
 
         Args:
             status_in (StatusDomain): Input data from the API.
 
         Returns:
             StatusDomain: The created status.
-
-        Raises:
-            HTTPException: 400 status if the status name already exists.
         """
-        # 1. Unique name check
+        # 1. Unique Name Check (Business Key)
         statement = select(DimStatus).where(DimStatus.status_name == status_in.status_name)
         if self.session.exec(statement).first():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Status '{status_in.status_name}' already exists."
+                detail=f"Status '{status_in.status_name}' is already registered."
             )
 
-        # 2. Map and Persist
-        new_db_status = DimStatus(
-            status_name=status_in.status_name,
-            is_billable=status_in.is_billable,
-            description=status_in.description
-        )
-        self.session.add(new_db_status)
-        self.session.commit()
-        self.session.refresh(new_db_status)
+        # 2. Extract data excluding system-managed fields
+        status_data = status_in.model_dump(exclude={"id", "source_timestamp", "updated_at"})
+        new_status = DimStatus(**status_data)
 
-        return self._map_to_domain(new_db_status)
-
-    def create_statuses_batch(self, statuses_in: list[StatusDomain]) -> list[StatusDomain]:
-        """Requirement: CRUD should allow batch operations.
-        
-        Optimizes the ingestion of multiple operational statuses in a single transaction.
-
-        Args:
-            statuses_in (List[StatusDomain]): A list of status objects.
-
-        Returns:
-            List[StatusDomain]: The list of created statuses.
-        """
-        db_entries = [
-            DimStatus(
-                status_name=s.status_name,
-                is_billable=s.is_billable,
-                description=s.description
-            ) for s in statuses_in
-        ]
+        # 3. Handle Medallion Metadata
+        now = datetime.now(UTC)
+        new_status.source_timestamp = getattr(status_in, "source_timestamp", None) or now
+        new_status.updated_at = now
 
         try:
-            self.session.add_all(db_entries)
+            # 4. Persist to Database
+            self.session.add(new_status)
             self.session.commit()
-            return statuses_in
+
+            # 5. Refresh to capture generated ID
+            self.session.refresh(new_status)
+            return self._map_to_domain(new_status)
         except Exception as e:
             self.session.rollback()
-            logger.error(f"Batch Status load failed: {e}")
+            logger.error(f"Failed to create status: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to process batch status creation."
+                detail="Internal database error during status creation."
             )
 
-    def get_all_statuses(self) -> list[StatusDomain]:
-        """Retrieves all registered operational statuses."""
-        statement = select(DimStatus)
+    # --- 2. create_statuses_batch ---
+    def create_statuses_batch(self, statuses_in: list[StatusDomain]) -> list[StatusDomain]:
+        """Requirement: Batch CRUD. Ingests multiple statuses in one transaction.
+
+        Args:
+            statuses_in (list[StatusDomain]): List of status objects.
+
+        Returns:
+            list[StatusDomain]: The list of created statuses.
+        """
+        # 1. Batch Duplicate Check (Performance Optimized)
+        input_names = [s.status_name for s in statuses_in]
+        statement = select(DimStatus).where(col(DimStatus.status_name).in_(input_names))
+        if self.session.exec(statement).first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Batch contains status names that already exist."
+            )
+
+        # 2. Prepare DB entries with Metadata
+        now = datetime.now(UTC)
+        db_entries = []
+
+        for s_in in statuses_in:
+            entry_data = s_in.model_dump(exclude={"id", "source_timestamp", "updated_at"})
+            db_status = DimStatus(**entry_data)
+            db_status.source_timestamp = getattr(s_in, "source_timestamp", None) or now
+            db_status.updated_at = now
+            db_entries.append(db_status)
+
+        try:
+            # 3. Batch insert and Atomic Commit
+            self.session.add_all(db_entries)
+            self.session.commit()
+
+            # 4. Refresh all to capture IDs
+            for entry in db_entries:
+                self.session.refresh(entry)
+
+            # 5. Map back to Domain objects
+            return [self._map_to_domain(e) for e in db_entries]
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Batch status creation failed: {e!s}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal error during batch status creation."
+            )
+
+    # --- 3. get_all_statuses ---
+    def get_all_statuses(self, limit: int = 100, offset: int = 0) -> list[StatusDomain]:
+        """Full CRUD: Retrieves all active operational statuses with pagination.
+
+        Args:
+            limit (int): Max records to return.
+            offset (int): Records to skip for pagination.
+
+        Returns:
+            list[StatusDomain]: Paginated list of statuses.
+        """
+        # 1. Build statement with pagination and alphabetical sorting
+        statement = (
+            select(DimStatus)
+            .where(col(DimStatus.is_active))
+            .order_by(col(DimStatus.status_name))
+            .offset(offset)
+            .limit(limit)
+        )
+
+        # 2. Execute and return mapped list
         results = self.session.exec(statement).all()
         return [self._map_to_domain(s) for s in results]
 
+    # --- 4. get_status ---
     def get_status(self, id: int) -> StatusDomain:
-        """Requirement: Full CRUD.
-        Retrieves a single operational status record from the Silver layer.
-
-        This method coordinates the retrieval of a database model and its
-        transformation into a pure Pydantic Domain model for the API layer.
+        """Full CRUD: Retrieves a single operational status record by ID.
 
         Args:
-            id (int): The primary key identifier of the status to retrieve.
+            id (int): Primary key ID.
 
         Returns:
-            StatusDomain: The validated domain representation of the status.
-
-        Raises:
-            HTTPException: 404 status code if the status record is not found,
-                propagated from the internal helper.
+            StatusDomain: The domain entity representation.
         """
-        # 1. Fetch from Data Access layer (Silver)
+        # 1. Fetch via helper and map
         db_status = self._get_dim_status_or_404(id)
-
-        # 2. Map and return to Domain layer
         return self._map_to_domain(db_status)
 
-    def update_status(self, status_id: int, status_in: StatusDomain) -> StatusDomain:
+    # --- 5. update_status ---
+    def update_status(self, id: int, data: StatusDomain) -> StatusDomain:
         """Full CRUD: Updates an existing operational status definition.
 
         Args:
-            status_id (int): The ID to update.
-            status_in (StatusDomain): The updated data.
+            id (int): The ID to update.
+            data (StatusDomain): Updated status data.
 
         Returns:
             StatusDomain: The updated entity.
         """
-        db_status = self._get_dim_status_or_404(status_id)
-
-        db_status.is_billable = status_in.is_billable
-        db_status.description = status_in.description
-
-        self.session.add(db_status)
-        self.session.commit()
-        self.session.refresh(db_status)
-        return self._map_to_domain(db_status)
-
-    def update_statuses_batch(self, statuses_in: list[StatusDomain]) -> list[StatusDomain]:
-        """Updates multiple statuses in a single atomic transaction.
-        Uses 'status_name' to identify existing records.
-
-        Args:
-            statuses_in (List[StatusDomain]): List of updated status data.
-
-        Returns:
-            List[StatusDomain]: The confirmed updated data.
-
-        Raises:
-            HTTPException: 404 if a status_name does not exist.
-            HTTPException: 500 on database error.
-        """
-        try:
-            for s_data in statuses_in:
-                # 1. Find the existing record by Business Key
-                statement = select(DimStatus).where(DimStatus.status_name == s_data.status_name)
-                db_status = self.session.exec(statement).first()
-
-                if not db_status:
-                    # Rollback the whole batch if one name is missing
-                    self.session.rollback()
-                    logger.error(f"Batch update failed: Status '{s_data.status_name}' not found.")
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Status '{s_data.status_name}' not found. Batch update aborted."
-                    )
-
-                # 2. Update metadata fields
-                db_status.is_billable = s_data.is_billable
-                db_status.description = s_data.description
-
-                self.session.add(db_status)
-
-            # 3. Commit all changes at once
-            self.session.commit()
-            logger.info(f"Successfully updated {len(statuses_in)} statuses in batch.")
-            return statuses_in
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            self.session.rollback()
-            logger.error(f"Critical error in status batch update: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal server error during batch update."
-            )
-
-    def delete_status(self, id: int) -> None:
-        """Requirement: Full CRUD.
-        Removes an operational status record from the dimension table.
-
-        Args:
-            id (int): The primary key ID of the status to delete.
-
-        Returns:
-            None: Returns nothing on successful deletion.
-
-        Raises:
-            HTTPException: 404 status code if the status ID does not exist,
-                triggered by the internal helper.
-        """
-        # 1. Retrieve the object or fail immediately with a 404
+        # 1. Fetch existing record
         db_status = self._get_dim_status_or_404(id)
 
-        # 2. Perform the deletion from the Silver layer
-        self.session.delete(db_status)
+        # 2. Dump data and update model using SQLModel helper
+        update_data = data.model_dump(exclude={"id", "updated_at"})
+        db_status.sqlmodel_update(update_data)
 
-        # 3. Finalize the transaction
-        self.session.commit()
+        # 3. Refresh update timestamp
+        db_status.updated_at = datetime.now(UTC)
 
-        logger.info(f"Successfully deleted status ID: {id}")
+        try:
+            # 4. Persist and return
+            self.session.add(db_status)
+            self.session.commit()
+            self.session.refresh(db_status)
+            return self._map_to_domain(db_status)
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to update status {id}: {e!s}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal database error during status update."
+            )
 
-    def delete_statuses_batch(self, ids: list[int]) -> None:
-        """Requirement: CRUD batch operations.
-        Bulk deletes multiple statuses by their primary key IDs.
-        
-        Uses the efficient 'IN' operator and ensures atomicity.
-        Satisfies Mypy type-checking by using the col() helper.
+    # --- 6. update_statuses_batch ---
+    def update_statuses_batch(self, data: list[StatusDomain]) -> list[StatusDomain]:
+        """Requirement: Batch CRUD. Updates multiple statuses using 'status_name'.
 
         Args:
-            ids (List[int]): List of primary key IDs to remove.
+            data (list[StatusDomain]): Updated status data list.
 
         Returns:
-            None: Returns nothing on success.
-
-        Raises:
-            HTTPException: 404 if one or more IDs do not exist.
-            HTTPException: 500 if a database error occurs.
+            list[StatusDomain]: Refreshed list of updated entities.
         """
-        try:
-            # 1. Fetch all matching records in a single query for efficiency
-            # We use col() to ensure Mypy recognizes the .in_() attribute
-            statement = select(DimStatus).where(col(DimStatus.id).in_(ids))
-            items_to_delete = self.session.exec(statement).all()
+        # 1. Performance Optimized Fetch (Single Roundtrip)
+        input_names = [s.status_name for s in data]
+        statement = select(DimStatus).where(col(DimStatus.status_name).in_(input_names))
+        db_statuses = self.session.exec(statement).all()
 
-            # 2. Validation: Ensure every ID provided exists in the database
-            if len(items_to_delete) != len(ids):
-                # Map found IDs (filtering out None to satisfy Mypy)
-                found_ids = {item.id for item in items_to_delete if item.id is not None}
+        # 2. Create Lookup Map for O(1) access
+        db_map = {s.status_name: s for s in db_statuses}
 
-                # Identify exactly which IDs are missing for the error message
-                missing_ids = set(ids) - found_ids
-
+        # 3. Atomic Validation
+        for s_data in data:
+            if s_data.status_name not in db_map:
                 self.session.rollback()
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Batch delete aborted. Status IDs not found: {list(missing_ids)}"
+                    detail=f"Status '{s_data.status_name}' not found. Batch aborted."
                 )
 
-            # 3. Perform the deletions
-            for item in items_to_delete:
-                self.session.delete(item)
+        now = datetime.now(UTC)
+        try:
+            # 4. Apply updates in loop
+            updated_entries = []
+            for s_data in data:
+                db_status = db_map[s_data.status_name]
+                update_dict = s_data.model_dump(exclude={"id", "updated_at"})
+                db_status.sqlmodel_update(update_dict)
+                db_status.updated_at = now
+                self.session.add(db_status)
+                updated_entries.append(db_status)
 
-            # 4. Commit transaction
+            # 5. Commit and map results
             self.session.commit()
-            logger.info(f"Successfully deleted batch of {len(items_to_delete)} statuses.")
-
-        except HTTPException:
-            # Re-raise managed HTTP exceptions
-            raise
+            return [self._map_to_domain(e) for e in updated_entries]
         except Exception as e:
-            # Rollback on unexpected database or system errors
             self.session.rollback()
-            logger.error(f"Batch Status deletion failed: {e}")
+            logger.error(f"Batch status update failed: {e!s}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal error during batch status deletion."
+                detail="Internal error during batch update execution."
             )
 
-    # --- GOLD LAYER ANALYTICS ---
+    # --- 7. delete_status ---
+    def delete_status(self, id: int) -> None:
+        """Full CRUD: Marks an operational status as inactive (soft-delete).
 
-    def get_operational_health_gold(self) -> list[dict[str, Any]]:
-        """Requirement: Querying Gold Layer.
-        
-        Refines status data to provide a high-level summary of operational
-        health and cost implications (Billable vs Non-Billable states).
-
-        Returns:
-            List[Dict[str, Any]]: A list of statuses with formatted metadata.
+        Args:
+            id (int): Primary key ID to deactivate.
         """
-        statuses = self.get_all_statuses()
-        return [
-            {
-                "status": s.status_name,
-                "billing_impact": "Active Cost" if s.is_billable else "Idle/No Cost",
-                "summary": s.description
-            } for s in statuses
-        ]
+        # 1. Fetch record via helper
+        db_status = self._get_dim_status_or_404(id)
+
+        # 2. Early return if already inactive
+        if not db_status.is_active:
+            return
+
+        try:
+            # 3. Apply Soft-Delete and update metadata
+            db_status.is_active = False
+            db_status.updated_at = datetime.now(UTC)
+            self.session.add(db_status)
+            self.session.commit()
+            logger.info(f"Status {id} deactivated.")
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to soft-delete status {id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error during status deactivation."
+            )
+
+    # --- 8. delete_statuses_batch ---
+    def delete_statuses_batch(self, ids: list[int]) -> None:
+        """Requirement: Batch CRUD. Marks multiple statuses as inactive.
+
+        Args:
+            ids (list[int]): Primary key IDs to deactivate.
+        """
+        # 1. Input Safety Check
+        if not ids:
+            return
+
+        try:
+            # 2. Fetch targeted items in single query
+            statement = select(DimStatus).where(col(DimStatus.id).in_(ids))
+            items = self.session.exec(statement).all()
+
+            # 3. Validation: Ensure all requested IDs exist
+            if len(items) != len(ids):
+                found_ids = {item.id for item in items if item.id is not None}
+                missing_ids = set(ids) - found_ids
+                self.session.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Batch aborted. IDs not found: {list(missing_ids)}"
+                )
+
+            # 4. Apply Soft-Delete to all items
+            now = datetime.now(UTC)
+            for item in items:
+                item.is_active = False
+                item.updated_at = now
+                self.session.add(item)
+
+            # 5. Atomic Commit
+            self.session.commit()
+            logger.info(f"Successfully deactivated {len(items)} statuses.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Batch status deactivation failed: {e!s}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal error during batch deactivation."
+            )

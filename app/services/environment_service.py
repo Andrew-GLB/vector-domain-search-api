@@ -1,5 +1,5 @@
 import logging
-from typing import Any, cast
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlmodel import Session, col, select
@@ -17,8 +17,8 @@ class EnvironmentService:
     """Service layer for managing Deployment Environments.
 
     This service coordinates the lifecycle of environments (e.g., Production, Staging),
-    ensuring that deployment stages are standardized and providing refined
-    criticality reports for the Gold Layer.
+    ensuring standardized deployment tiers and providing consistent metadata
+    for the Gold Layer of the Medallion Architecture.
     """
 
     def __init__(self, session: Session) -> None:
@@ -31,9 +31,6 @@ class EnvironmentService:
 
     def _map_to_domain(self, db_env: DimEnvironment) -> EnvironmentDomain:
         """Maps a Data Access model back to a pure Domain entity.
-        
-        Requirement: Domain entities != Data Access entities.
-        Uses typing.cast to satisfy Mypy strict Literal checking.
 
         Args:
             db_env (DimEnvironment): The database record.
@@ -41,259 +38,316 @@ class EnvironmentService:
         Returns:
             EnvironmentDomain: The Pydantic domain representation.
         """
-        return EnvironmentDomain(
-            env_name=cast(Any, db_env.env_name),
-            tier=cast(Any, db_env.tier),
-            is_ephemeral=db_env.is_ephemeral
-        )
+        return EnvironmentDomain.model_validate(db_env)
 
-    def _get_dim_env_or_404(self, env_id: int) -> DimEnvironment:
-        """Internal helper to retrieve an environment or raise a 404 error.
+    def _get_dim_env_or_404(self, id: int) -> DimEnvironment:
+        """Internal helper to retrieve an active environment or raise 404.
 
         Args:
-            env_id (int): The primary key ID.
+            id (int): The primary key ID.
 
         Returns:
-            DimEnvironment: The database record found.
+            DimEnvironment: The database record.
 
         Raises:
-            HTTPException: 404 status if the ID does not exist.
+            HTTPException: 404 status if not found or inactive.
         """
-        env = self.session.get(DimEnvironment, env_id)
+        statement = select(DimEnvironment).where(
+            DimEnvironment.id == id,
+            col(DimEnvironment.is_active)
+        )
+        env = self.session.exec(statement).first()
         if not env:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Environment with ID {env_id} not found."
+                detail=f"Environment with ID {id} not found."
             )
         return env
 
+    # --- 1. create_environment ---
     def create_environment(self, env_in: EnvironmentDomain) -> EnvironmentDomain:
-        """Validates business rules and persists a new environment.
+        """Full CRUD: Validates business rules and persists a new environment.
 
         Args:
             env_in (EnvironmentDomain): Input data from the API.
 
         Returns:
             EnvironmentDomain: The created environment.
-
-        Raises:
-            HTTPException: 400 status if the environment name already exists.
         """
-        # 1. Unique name check
+        # 1. Unique Name Check (Business Key)
         statement = select(DimEnvironment).where(DimEnvironment.env_name == env_in.env_name)
         if self.session.exec(statement).first():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Environment '{env_in.env_name}' already exists."
+                detail=f"Environment '{env_in.env_name}' is already registered."
             )
 
-        # 2. Map and Persist
-        new_db_env = DimEnvironment(
-            env_name=env_in.env_name,
-            tier=env_in.tier,
-            is_ephemeral=env_in.is_ephemeral
-        )
-        self.session.add(new_db_env)
-        self.session.commit()
-        self.session.refresh(new_db_env)
+        # 2. Extract data excluding system-managed fields
+        env_data = env_in.model_dump(exclude={"id", "source_timestamp", "updated_at"})
+        new_env = DimEnvironment(**env_data)
 
-        return self._map_to_domain(new_db_env)
-
-    def create_environments_batch(self, envs_in: list[EnvironmentDomain]) -> list[EnvironmentDomain]:
-        """Requirement: CRUD should allow batch operations.
-        
-        Ingests multiple environments in a single transaction for efficiency.
-
-        Args:
-            envs_in (List[EnvironmentDomain]): A list of environment objects.
-
-        Returns:
-            List[EnvironmentDomain]: The list of created environments.
-        """
-        db_entries = [
-            DimEnvironment(
-                env_name=e.env_name,
-                tier=e.tier,
-                is_ephemeral=e.is_ephemeral
-            ) for e in envs_in
-        ]
+        # 3. Handle Medallion Metadata
+        now = datetime.now(UTC)
+        new_env.source_timestamp = getattr(env_in, "source_timestamp", None) or now
+        new_env.updated_at = now
 
         try:
-            self.session.add_all(db_entries)
+            # 4. Persist to Database
+            self.session.add(new_env)
             self.session.commit()
-            return envs_in
+            
+            # 5. Refresh to capture ID and return Domain model
+            self.session.refresh(new_env)
+            return self._map_to_domain(new_env)
         except Exception as e:
             self.session.rollback()
-            logger.error(f"Batch Environment load failed: {e}")
+            logger.error(f"Failed to create environment: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to process batch environment creation."
+                detail="Internal database error during environment creation."
             )
 
-    def get_all_environments(self) -> list[EnvironmentDomain]:
-        """Retrieves all registered environments.
+    # --- 2. create_environments_batch ---
+    def create_environments_batch(self, envs_in: list[EnvironmentDomain]) -> list[EnvironmentDomain]:
+        """Requirement: Batch CRUD. Ingests multiple environments in one transaction.
+
+        Args:
+            envs_in (list[EnvironmentDomain]): List of environment objects.
 
         Returns:
-            List[EnvironmentDomain]: All environment records mapped to domain.
+            list[EnvironmentDomain]: The list of created environments.
         """
-        statement = select(DimEnvironment)
+        # 1. Batch Duplicate Check (Performance Optimized)
+        input_names = [e.env_name for e in envs_in]
+        statement = select(DimEnvironment).where(col(DimEnvironment.env_name).in_(input_names))
+        if self.session.exec(statement).first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Batch contains environment names that already exist."
+            )
+
+        # 2. Prepare DB entries with Metadata
+        now = datetime.now(UTC)
+        db_entries = []
+
+        for e_in in envs_in:
+            entry_data = e_in.model_dump(exclude={"id", "source_timestamp", "updated_at"})
+            db_env = DimEnvironment(**entry_data)
+            db_env.source_timestamp = getattr(e_in, "source_timestamp", None) or now
+            db_env.updated_at = now
+            db_entries.append(db_env)
+
+        try:
+            # 3. Batch insert and Atomic Commit
+            self.session.add_all(db_entries)
+            self.session.commit()
+            
+            # 4. Refresh all to capture IDs
+            for entry in db_entries:
+                self.session.refresh(entry)
+            
+            # 5. Map back to Domain objects
+            return [self._map_to_domain(e) for e in db_entries]
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Batch environment creation failed: {e!s}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal error during batch environment creation."
+            )
+
+    # --- 3. get_all_environments ---
+    def get_all_environments(self, limit: int = 100, offset: int = 0) -> list[EnvironmentDomain]:
+        """Full CRUD: Retrieves all active environments from the database.
+
+        Args:
+            limit (int): Max records to return.
+            offset (int): Records to skip.
+
+        Returns:
+            list[EnvironmentDomain]: Paginated list of environments.
+        """
+        # 1. Build statement with pagination and sorting
+        statement = (
+            select(DimEnvironment)
+            .where(col(DimEnvironment.is_active))
+            .order_by(col(DimEnvironment.env_name))
+            .offset(offset)
+            .limit(limit)
+        )
+        
+        # 2. Execute and return mapped list
         results = self.session.exec(statement).all()
         return [self._map_to_domain(e) for e in results]
 
-    def get_environment(self, env_id: int) -> EnvironmentDomain:
+    # --- 4. get_environment ---
+    def get_environment(self, id: int) -> EnvironmentDomain:
         """Full CRUD: Retrieves a single environment record by ID.
 
         Args:
-            env_id (int): The primary key ID.
+            id (int): Primary key ID.
 
         Returns:
-            EnvironmentDomain: The domain representation of the environment.
+            EnvironmentDomain: The domain entity.
         """
-        db_env = self._get_dim_env_or_404(env_id)
+        # 1. Fetch via helper and map
+        db_env = self._get_dim_env_or_404(id)
         return self._map_to_domain(db_env)
 
-    def update_environment(self, env_id: int, env_in: EnvironmentDomain) -> EnvironmentDomain:
+    # --- 5. update_environment ---
+    def update_environment(self, id: int, data: EnvironmentDomain) -> EnvironmentDomain:
         """Full CRUD: Updates an existing environment's properties.
 
         Args:
-            env_id (int): The ID to update.
-            env_in (EnvironmentDomain): The updated data.
+            id (int): The ID to update.
+            data (EnvironmentDomain): Updated data.
 
         Returns:
             EnvironmentDomain: The updated entity.
         """
-        db_env = self._get_dim_env_or_404(env_id)
+        # 1. Fetch existing record
+        db_env = self._get_dim_env_or_404(id)
 
-        db_env.env_name = env_in.env_name
-        db_env.tier = env_in.tier
-        db_env.is_ephemeral = env_in.is_ephemeral
-
-        self.session.add(db_env)
-        self.session.commit()
-        self.session.refresh(db_env)
-        return self._map_to_domain(db_env)
-
-    def update_environments_batch(self, envs_in: list[EnvironmentDomain]) -> list[EnvironmentDomain]:
-        """Requirement: CRUD batch operations.
-        Updates multiple environments using 'env_name' as the business key.
+        # 2. Dump data and update model
+        update_data = data.model_dump(exclude={"id", "updated_at"})
+        db_env.sqlmodel_update(update_data)
         
-        Ensures atomicity: if one environment is not found, the entire batch
-        transaction is rolled back.
+        # 3. Refresh update timestamp
+        db_env.updated_at = datetime.now(UTC)
 
-        Args:
-            envs_in (List[EnvironmentDomain]): List of updated environment data.
-
-        Returns:
-            List[EnvironmentDomain]: The original input list on success.
-
-        Raises:
-            HTTPException: 404 status if a specific environment name is not found.
-            HTTPException: 500 status if a database error occurs.
-        """
         try:
-            for e_data in envs_in:
-                # 1. Lookup by unique business key
-                statement = select(DimEnvironment).where(DimEnvironment.env_name == e_data.env_name)
-                db_env = self.session.exec(statement).first()
-
-                if not db_env:
-                    self.session.rollback()
-                    logger.error(f"Batch update failed: Environment '{e_data.env_name}' not found.")
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Environment '{e_data.env_name}' not found. Batch update aborted."
-                    )
-
-                # 2. Apply updates
-                db_env.tier = e_data.tier
-                db_env.is_ephemeral = e_data.is_ephemeral
-                self.session.add(db_env)
-
+            # 4. Persist and return
+            self.session.add(db_env)
             self.session.commit()
-            logger.info(f"Successfully updated batch of {len(envs_in)} environments.")
-            return envs_in
-
-        except HTTPException:
-            raise
+            self.session.refresh(db_env)
+            return self._map_to_domain(db_env)
         except Exception as e:
             self.session.rollback()
-            logger.error(f"Batch Environment update failed: {e}")
+            logger.error(f"Failed to update environment {id}: {e!s}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal error during batch environment update."
+                detail="Internal database error during environment update."
             )
 
-    def delete_environment(self, env_id: int) -> None:
-        """Full CRUD: Deletes a single environment record.
-
-        Args:
-            env_id (int): The primary key ID to delete.
-        """
-        db_env = self._get_dim_env_or_404(env_id)
-        self.session.delete(db_env)
-        self.session.commit()
-
-    def delete_environments_batch(self, ids: list[int]) -> None:
+    # --- 6. update_environments_batch ---
+    def update_environments_batch(self, envs_in: list[EnvironmentDomain]) -> list[EnvironmentDomain]:
         """Requirement: CRUD batch operations.
-        Bulk deletes multiple environments by their primary key IDs.
-        
-        Uses col() to satisfy Mypy strict typing.
+        Updates multiple environments using 'env_name' as business key.
 
         Args:
-            ids (List[int]): List of primary key IDs to remove.
+            envs_in (list[EnvironmentDomain]): Updated environment data.
 
-        Raises:
-            HTTPException: 404 if one or more IDs do not exist.
+        Returns:
+            list[EnvironmentDomain]: Refreshed list of updated environments.
         """
-        try:
-            statement = select(DimEnvironment).where(col(DimEnvironment.id).in_(ids))
-            items_to_delete = self.session.exec(statement).all()
+        # 1. Performance Optimized Fetch (Single Roundtrip)
+        input_names = [e.env_name for e in envs_in]
+        statement = select(DimEnvironment).where(col(DimEnvironment.env_name).in_(input_names))
+        db_envs = self.session.exec(statement).all()
+        
+        # 2. Create Lookup Map
+        db_map = {e.env_name: e for e in db_envs}
 
-            if len(items_to_delete) != len(ids):
-                found_ids = {item.id for item in items_to_delete if item.id is not None}
-                missing_ids = set(ids) - found_ids
-
+        # 3. Atomic Validation
+        for e_data in envs_in:
+            if e_data.env_name not in db_map:
                 self.session.rollback()
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Batch delete aborted. IDs not found: {list(missing_ids)}"
+                    detail=f"Environment '{e_data.env_name}' not found. Batch aborted."
                 )
 
-            for item in items_to_delete:
-                self.session.delete(item)
+        now = datetime.now(UTC)
+        try:
+            # 4. Apply updates in loop
+            updated_entries = []
+            for e_data in envs_in:
+                db_env = db_map[e_data.env_name]
+                update_dict = e_data.model_dump(exclude={"id", "updated_at"})
+                db_env.sqlmodel_update(update_dict)
+                db_env.updated_at = now
+                self.session.add(db_env)
+                updated_entries.append(db_env)
 
+            # 5. Commit and map results
             self.session.commit()
-            logger.info(f"Successfully deleted batch of {len(items_to_delete)} environments.")
+            return [self._map_to_domain(e) for e in updated_entries]
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Batch environment update failed: {e!s}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal error during batch update execution."
+            )
 
+    # --- 7. delete_environment ---
+    def delete_environment(self, id: int) -> None:
+        """Full CRUD: Marks an environment as inactive (soft-delete).
+
+        Args:
+            id (int): Primary key ID to deactivate.
+        """
+        # 1. Fetch record
+        db_env = self._get_dim_env_or_404(id)
+        
+        # 2. Safety check
+        if not db_env.is_active:
+            return
+
+        try:
+            # 3. Apply Soft-Delete metadata
+            db_env.is_active = False
+            db_env.updated_at = datetime.now(UTC)
+            self.session.add(db_env)
+            self.session.commit()
+            logger.info(f"Environment {id} deactivated.")
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to soft-delete environment {id}: {e}")
+            raise HTTPException(status_code=500, detail="Error during environment deactivation.")
+
+    # --- 8. delete_environments_batch ---
+    def delete_environments_batch(self, ids: list[int]) -> None:
+        """Requirement: Batch CRUD. Marks multiple environments as inactive.
+
+        Args:
+            ids (list[int]): Primary key IDs to deactivate.
+        """
+        # 1. Empty Check
+        if not ids:
+            return
+
+        try:
+            # 2. Fetch targeted items
+            statement = select(DimEnvironment).where(col(DimEnvironment.id).in_(ids))
+            items = self.session.exec(statement).all()
+
+            # 3. Batch Validation
+            if len(items) != len(ids):
+                found_ids = {item.id for item in items if item.id is not None}
+                missing_ids = set(ids) - found_ids
+                self.session.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Batch aborted. IDs not found: {list(missing_ids)}"
+                )
+
+            # 4. Apply Soft-Delete to all
+            now = datetime.now(UTC)
+            for item in items:
+                item.is_active = False
+                item.updated_at = now
+                self.session.add(item)
+
+            # 5. Finalize Transaction
+            self.session.commit()
+            logger.info(f"Successfully deactivated {len(items)} environments.")
         except HTTPException:
             raise
         except Exception as e:
             self.session.rollback()
-            logger.error(f"Batch Environment deletion failed: {e}")
+            logger.error(f"Batch environment deactivation failed: {e!s}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal error during batch environment deletion."
+                detail="Internal error during batch deactivation."
             )
-
-    # --- GOLD LAYER ANALYTICS ---
-
-    def get_criticality_summary_gold(self) -> dict[str, Any]:
-        """Requirement: Querying Gold Layer.
-        
-        Refines environment data to provide a count of mission-critical
-        vs non-critical deployment stages.
-
-        Returns:
-            Dict[str, Any]: A summarized count by Tier.
-        """
-        envs = self.get_all_environments()
-        summary: dict[str, int] = {}
-
-        for e in envs:
-            summary[e.tier] = summary.get(e.tier, 0) + 1
-
-        return {
-            "total_environments": len(envs),
-            "tier_breakdown": summary,
-            "report_label": "Infrastructure Criticality Overview"
-        }

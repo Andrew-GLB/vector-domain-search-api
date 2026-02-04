@@ -1,7 +1,30 @@
 import re
 from datetime import date, datetime
+from typing import Annotated, Any, TypeVar
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, GetCoreSchemaHandler, field_validator
+from pydantic_core import core_schema
+from sqlalchemy.orm import Mapped
+
+
+T = TypeVar("T")
+
+class _MappedAnnotation:
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, _source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        # This tells Pydantic: "If you see Mapped[T],
+        # just look at what T is and use that schema."
+        # For Mapped[int], it will just use the int schema.
+        
+        # We extract the inner type (e.g., int from Mapped[int])
+        # In Mapped[int], __args__ gives us (int,)
+        inner_type = _source_type.__args__[0]
+        return handler.generate_schema(inner_type)
+
+# This is a 'helper' that you use in your model
+PydanticMapped = Annotated[Mapped[T], _MappedAnnotation]
 
 
 class AssetDomain(BaseModel):
@@ -13,14 +36,18 @@ class AssetDomain(BaseModel):
     'Gold Layer' in the warehouse.
 
     Attributes:
+        id (int): Add ID to track back to Supabase/Postgres
         resource_name (str): Human-readable name of the cloud resource.
         serial_number (str): Unique business key (Format: RES-XXXX-YYYY).
         description (str): Detailed metadata about the asset's purpose.
         created_at (date): The date the resource was officially provisioned.
+        is_active (bool): True (Pipeline Metadata)
+        source_timestamp (datetime): datetime or datetime.now(UTC) (Pipeline Metadata)
+        updated_at (datetime): datetime or datetime.now(UTC) (Pipeline Metadata)
     """
 
     # 1. Add ID to track back to Supabase/Postgres
-    id: int | None = None
+    id: PydanticMapped[int] | None = None
 
     # Core Data
     resource_name: str = Field(
@@ -43,7 +70,7 @@ class AssetDomain(BaseModel):
 
     # 2. Add Pipeline Metadata to match DimAsset
     is_active: bool = True
-    source_timestamp: datetime | None = None
+    source_timestamp: datetime |    None = None
     updated_at: datetime | None = None
 
     @field_validator('serial_number')
@@ -94,13 +121,17 @@ class AssetDomain(BaseModel):
     # 3. Enable ORM mode for SQLModel compatibility
     model_config = {
         "from_attributes": True,
+        "arbitrary_types_allowed": True,
         "json_schema_extra": {
             "example": {
-                "resource_name": "Primary Production Database",
-                "serial_number": "RES-SQLS-2024",
-                "description": "Main SQL Server instance.",
-                "created_at": "2024-01-15",
-                "is_active": True
+                "id": 1,
+                "resource_name": "Production-Web-Server-01",
+                "serial_number": "RES-WWEB-0001",
+                "description": "Main customer-facing web engine.",
+                "created_at": "2023-01-10",
+                "is_active": True,
+                "source_timestamp": "2026-01-23 00:05:00",
+                "updated_at": "2026-01-28 00:39:44.424515"
             }
         }
     }

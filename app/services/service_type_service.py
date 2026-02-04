@@ -1,8 +1,8 @@
 import logging
-from typing import Any, cast  # Added cast
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlmodel import Session, col, select  # Added col
+from sqlmodel import Session, col, select
 
 # Layer 4: Data Access (Gold Layer)
 from app.data_access.models import DimServiceType
@@ -17,7 +17,7 @@ class ServiceTypeService:
     """Service layer for managing Cloud Service Type dimensions.
 
     This service coordinates the classification of cloud resources, ensuring
-    technical identifiers are standardized (uppercase) and categorized correctly
+    technical identifiers are standardized and categorized correctly
     within the Gold Layer Warehouse.
     """
 
@@ -38,32 +38,38 @@ class ServiceTypeService:
         Returns:
             ServiceTypeDomain: The Pydantic domain representation.
         """
-        return ServiceTypeDomain(
-            service_name=db_service.service_name,
-            # Fix: Use cast to satisfy Mypy strict Literal checking
-            category=cast(Any, db_service.category),
-            is_managed=db_service.is_managed
-        )
+        return ServiceTypeDomain.model_validate(db_service)
 
-    def _get_dim_service_or_404(self, service_id: int) -> DimServiceType:
-        """Internal helper to retrieve a service record or raise a 404 error.
+    def _get_dim_service_or_404(self, id: int) -> DimServiceType:
+        """Internal helper to retrieve an active service record or raise a 404 error.
 
         Args:
-            service_id (int): The primary key ID.
+            id (int): The primary key ID.
 
         Returns:
             DimServiceType: The database record found.
+
+        Raises:
+            HTTPException: 404 status if not found or inactive.
         """
-        service_obj = self.session.get(DimServiceType, service_id)
+        # 1. Build statement filtering by ID and active status
+        statement = select(DimServiceType).where(
+            DimServiceType.id == id,
+            col(DimServiceType.is_active)
+        )
+        service_obj = self.session.exec(statement).first()
+
+        # 2. Raise 404 if record is missing or soft-deleted
         if not service_obj:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Service Type with ID {service_id} not found."
+                detail=f"Service Type with ID {id} not found."
             )
         return service_obj
 
+    # --- 1. create_service_type ---
     def create_service_type(self, service_in: ServiceTypeDomain) -> ServiceTypeDomain:
-        """Validates business rules and persists a new Cloud Service Type.
+        """Full CRUD: Validates business rules and persists a new Cloud Service Type.
 
         Args:
             service_in (ServiceTypeDomain): Input data from the API/ETL.
@@ -71,7 +77,7 @@ class ServiceTypeService:
         Returns:
             ServiceTypeDomain: The created service type.
         """
-        # 1. Idempotency Check (Standardized Name)
+        # 1. Idempotency Check (Business Key)
         statement = select(DimServiceType).where(
             DimServiceType.service_name == service_in.service_name
         )
@@ -81,218 +87,276 @@ class ServiceTypeService:
                 detail=f"Service '{service_in.service_name}' already exists in the catalog."
             )
 
-        # 2. Map and Persist to Gold Layer
-        new_db_service = DimServiceType(
-            service_name=service_in.service_name,
-            category=service_in.category,
-            is_managed=service_in.is_managed
-        )
+        # 2. Extract data excluding system-managed fields
+        service_data = service_in.model_dump(exclude={"id", "source_timestamp", "updated_at"})
+        new_db_service = DimServiceType(**service_data)
 
-        self.session.add(new_db_service)
-        self.session.commit()
-        self.session.refresh(new_db_service)
-
-        logger.info(f"Registered new service type: {new_db_service.service_name}")
-        return self._map_to_domain(new_db_service)
-
-    def create_service_types_batch(self, services_in: list[ServiceTypeDomain]) -> list[ServiceTypeDomain]:
-        """Requirement: Batch CRUD operations.
-        
-        Optimizes ingestion for bulk CSV uploads or initial seeding.
-        """
-        db_entries = [
-            DimServiceType(
-                service_name=s.service_name,
-                category=s.category,
-                is_managed=s.is_managed
-            ) for s in services_in
-        ]
+        # 3. Handle Medallion Metadata
+        now = datetime.now(UTC)
+        new_db_service.source_timestamp = getattr(service_in, "source_timestamp", None) or now
+        new_db_service.updated_at = now
 
         try:
-            self.session.add_all(db_entries)
+            # 4. Persist to Database
+            self.session.add(new_db_service)
             self.session.commit()
-            return services_in
+            
+            # 5. Refresh to capture generated ID
+            self.session.refresh(new_db_service)
+            logger.info(f"Registered new service type: {new_db_service.service_name}")
+            return self._map_to_domain(new_db_service)
         except Exception as e:
             self.session.rollback()
-            logger.error(f"Batch Service Type load failed: {e}")
+            logger.error(f"Failed to create service type: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to process batch service type ingestion."
+                detail="Internal database error during service type creation."
             )
 
-    def get_all_service_types(self) -> list[ServiceTypeDomain]:
-        """Retrieves the full catalog of service classifications."""
-        statement = select(DimServiceType)
+    # --- 2. create_service_types_batch ---
+    def create_service_types_batch(self, services_in: list[ServiceTypeDomain]) -> list[ServiceTypeDomain]:
+        """Requirement: Batch CRUD. Ingests multiple service types in one transaction.
+
+        Args:
+            services_in (list[ServiceTypeDomain]): List of service type objects.
+
+        Returns:
+            list[ServiceTypeDomain]: The list of created service types.
+        """
+        # 1. Batch Duplicate Check (Performance Optimized)
+        input_names = [s.service_name for s in services_in]
+        statement = select(DimServiceType).where(col(DimServiceType.service_name).in_(input_names))
+        if self.session.exec(statement).first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Batch contains service types that already exist in the catalog."
+            )
+
+        # 2. Prepare DB entries with Metadata
+        now = datetime.now(UTC)
+        db_entries = []
+
+        for s_in in services_in:
+            entry_data = s_in.model_dump(exclude={"id", "source_timestamp", "updated_at"})
+            db_service = DimServiceType(**entry_data)
+            db_service.source_timestamp = getattr(s_in, "source_timestamp", None) or now
+            db_service.updated_at = now
+            db_entries.append(db_service)
+
+        try:
+            # 3. Batch insert and Atomic Commit
+            self.session.add_all(db_entries)
+            self.session.commit()
+            
+            # 4. Refresh all to capture IDs
+            for entry in db_entries:
+                self.session.refresh(entry)
+            
+            # 5. Map back to Domain objects
+            return [self._map_to_domain(e) for e in db_entries]
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Batch Service Type load failed: {e!s}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal error during batch service type creation."
+            )
+
+    # --- 3. get_all_service_types ---
+    def get_all_service_types(self, limit: int = 100, offset: int = 0) -> list[ServiceTypeDomain]:
+        """Full CRUD: Retrieves the full catalog of active service classifications.
+
+        Args:
+            limit (int): Max records to return.
+            offset (int): Records to skip for pagination.
+
+        Returns:
+            list[ServiceTypeDomain]: Paginated list of service types.
+        """
+        # 1. Build statement with pagination and alphabetical sorting
+        statement = (
+            select(DimServiceType)
+            .where(col(DimServiceType.is_active))
+            .order_by(col(DimServiceType.service_name))
+            .offset(offset)
+            .limit(limit)
+        )
+        
+        # 2. Execute and return mapped list
         results = self.session.exec(statement).all()
         return [self._map_to_domain(s) for s in results]
 
-    def get_service_type(self, service_id: int) -> ServiceTypeDomain:
-        """Retrieves a single service classification by ID."""
-        db_service = self._get_dim_service_or_404(service_id)
-        return self._map_to_domain(db_service)
-
-    def update_service_type(self, service_id: int, service_in: ServiceTypeDomain) -> ServiceTypeDomain:
-        """Updates an existing service definition (e.g., changing managed status)."""
-        db_service = self._get_dim_service_or_404(service_id)
-
-        db_service.category = service_in.category
-        db_service.is_managed = service_in.is_managed
-
-        self.session.add(db_service)
-        self.session.commit()
-        self.session.refresh(db_service)
-        return self._map_to_domain(db_service)
-
-    def delete_service_type(self, id: int) -> None:
-        """Removes a service classification record from the dimension table.
-
-        This operation deletes the physical record from the Silver layer.
-        Note: In a production environment, this should be preceded by a
-        check for existing metrics linked to this service type.
+    # --- 4. get_service_type ---
+    def get_service_type(self, id: int) -> ServiceTypeDomain:
+        """Full CRUD: Retrieves a single service classification by ID.
 
         Args:
-            id (int): The primary key ID of the service type to delete.
+            id (int): Primary key ID.
 
         Returns:
-            None: Returns nothing on successful deletion.
-
-        Raises:
-            HTTPException: 404 status code if the service ID does not exist,
-                triggered by the internal helper.
+            ServiceTypeDomain: The domain entity representation.
         """
-        # 1. Retrieve the object or fail immediately with 404
-        # Fix: Call existing _get_dim_service_or_404 helper
+        # 1. Fetch via helper and map
+        db_service = self._get_dim_service_or_404(id)
+        return self._map_to_domain(db_service)
+
+    # --- 5. update_service_type ---
+    def update_service_type(self, id: int, data: ServiceTypeDomain) -> ServiceTypeDomain:
+        """Full CRUD: Updates an existing service definition's properties.
+
+        Args:
+            id (int): The ID to update.
+            data (ServiceTypeDomain): Updated service type data.
+
+        Returns:
+            ServiceTypeDomain: The updated entity.
+        """
+        # 1. Fetch existing record
         db_service = self._get_dim_service_or_404(id)
 
-        # 2. Perform the deletion
-        self.session.delete(db_service)
+        # 2. Dump data and update model using SQLModel helper
+        update_data = data.model_dump(exclude={"id", "updated_at"})
+        db_service.sqlmodel_update(update_data)
+        
+        # 3. Refresh update timestamp
+        db_service.updated_at = datetime.now(UTC)
 
-        # 3. Commit the transaction
-        self.session.commit()
+        try:
+            # 4. Persist and return
+            self.session.add(db_service)
+            self.session.commit()
+            self.session.refresh(db_service)
+            return self._map_to_domain(db_service)
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to update service type {id}: {e!s}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal database error during service type update."
+            )
 
+    # --- 6. update_service_types_batch ---
     def update_service_types_batch(self, services_in: list[ServiceTypeDomain]) -> list[ServiceTypeDomain]:
         """Requirement: CRUD batch operations.
         Updates multiple service types using 'service_name' as the business key.
-        
-        Ensures atomicity: if one service_name is not found, the entire batch
-        transaction is rolled back.
 
         Args:
-            services_in (List[ServiceTypeDomain]): List of updated service type data.
+            services_in (list[ServiceTypeDomain]): Updated service type data.
 
         Returns:
-            List[ServiceTypeDomain]: The original input list on success.
-
-        Raises:
-            HTTPException: 404 status if a specific service name is not found.
-            HTTPException: 500 status if a database error occurs.
+            list[ServiceTypeDomain]: Refreshed list of updated entities.
         """
-        try:
-            for s_data in services_in:
-                # 1. Lookup by unique business key: service_name
-                statement = select(DimServiceType).where(DimServiceType.service_name == s_data.service_name)
-                db_service = self.session.exec(statement).first()
-
-                # 2. If not found, abort the whole batch to ensure data integrity
-                if not db_service:
-                    self.session.rollback()
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Service type '{s_data.service_name}' not found. Batch aborted."
-                    )
-
-                # 3. Apply updates to the Silver layer model
-                db_service.category = s_data.category
-                db_service.is_managed = s_data.is_managed
-
-                self.session.add(db_service)
-
-            # 4. Finalize the transaction
-            self.session.commit()
-            logger.info(f"Successfully updated batch of {len(services_in)} service types.")
-            return services_in
-
-        except HTTPException:
-            # Re-raise the 404 we created above
-            raise
-        except Exception as e:
-            # Handle unexpected database or connection errors
-            self.session.rollback()
-            logger.error(f"Batch Service Type update failed: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal error during batch update."
-            )
-
-    def delete_service_types_batch(self, ids: list[int]) -> None:
-        """Requirement: CRUD batch operations.
-        Bulk deletes multiple service types by their primary key IDs.
+        # 1. Performance Optimized Fetch (Single Roundtrip)
+        input_names = [s.service_name for s in services_in]
+        statement = select(DimServiceType).where(col(DimServiceType.service_name).in_(input_names))
+        db_services = self.session.exec(statement).all()
         
-        Ensures atomicity: If any provided ID is not found in the database,
-        the entire transaction is rolled back.
+        # 2. Create Lookup Map for O(1) access
+        db_map = {s.service_name: s for s in db_services}
 
-        Args:
-            ids (List[int]): List of primary key IDs to be removed.
-
-        Returns:
-            None: Returns nothing on successful completion.
-
-        Raises:
-            HTTPException: 404 status if one or more IDs are not found.
-            HTTPException: 500 status if a database error occurs.
-        """
-        try:
-            # 1. Fetch all matching records in a single query (Efficiency)
-            # Fix: Use col() to ensure Mypy recognizes attributes on Optional field
-            statement = select(DimServiceType).where(col(DimServiceType.id).in_(ids))
-            items_to_delete = self.session.exec(statement).all()
-
-            # 2. Validation: Ensure every ID provided actually exists (Integrity)
-            if len(items_to_delete) != len(ids):
-                # Calculate which IDs were missing for a better error message
-                found_ids = {item.id for item in items_to_delete}
-                missing_ids = set(ids) - found_ids
-
+        # 3. Atomic Validation
+        for s_data in services_in:
+            if s_data.service_name not in db_map:
                 self.session.rollback()
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Batch delete aborted. IDs not found: {list(missing_ids)}"
+                    detail=f"Service type '{s_data.service_name}' not found. Batch aborted."
                 )
 
-            # 3. Perform deletions
-            for item in items_to_delete:
-                self.session.delete(item)
+        now = datetime.now(UTC)
+        try:
+            # 4. Apply updates in loop
+            updated_entries = []
+            for s_data in services_in:
+                db_service = db_map[s_data.service_name]
+                update_dict = s_data.model_dump(exclude={"id", "updated_at"})
+                db_service.sqlmodel_update(update_dict)
+                db_service.updated_at = now
+                self.session.add(db_service)
+                updated_entries.append(db_service)
 
-            # 4. Commit as a single transaction
+            # 5. Commit and map results
             self.session.commit()
-            logger.info(f"Successfully deleted batch of {len(items_to_delete)} service types.")
-
-        except HTTPException:
-            # Re-raise the 404 from the validation step
-            raise
+            return [self._map_to_domain(e) for e in updated_entries]
         except Exception as e:
-            # Handle unexpected DB errors
             self.session.rollback()
-            logger.error(f"Batch Service Type deletion failed: {e}")
+            logger.error(f"Batch service type update failed: {e!s}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal error during batch deletion."
+                detail="Internal error during batch update execution."
             )
 
-    # --- GOLD LAYER ANALYTICS ---
+    # --- 7. delete_service_type ---
+    def delete_service_type(self, id: int) -> None:
+        """Full CRUD: Marks a service type as inactive (soft-delete).
 
-    def get_infrastructure_managed_report_gold(self) -> list[dict[str, Any]]:
-        """Requirement: Querying Gold Layer.
-        
-        Refines catalog data to provide insights into operational responsibility
-        and infrastructure complexity.
+        Args:
+            id (int): Primary key ID to deactivate.
         """
-        services = self.get_all_service_types()
-        return [
-            {
-                "technical_id": s.service_name,
-                "domain": s.category,
-                "responsibility_model": "Provider Managed (PaaS/SaaS)" if s.is_managed else "Customer Managed (IaaS)",
-                "operational_complexity": "Low" if s.is_managed else "High"
-            } for s in services
-        ]
+        # 1. Fetch record via helper
+        db_service = self._get_dim_service_or_404(id)
+        
+        # 2. Early return if already inactive
+        if not db_service.is_active:
+            return
+
+        try:
+            # 3. Apply Soft-Delete and update metadata
+            db_service.is_active = False
+            db_service.updated_at = datetime.now(UTC)
+            self.session.add(db_service)
+            self.session.commit()
+            logger.info(f"Service Type {id} deactivated.")
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to soft-delete service type {id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error during service type deactivation."
+            )
+
+    # --- 8. delete_service_types_batch ---
+    def delete_service_types_batch(self, ids: list[int]) -> None:
+        """Requirement: Batch CRUD. Marks multiple service types as inactive.
+
+        Args:
+            ids (list[int]): Primary key IDs to deactivate.
+        """
+        # 1. Input Safety Check
+        if not ids:
+            return
+
+        try:
+            # 2. Fetch targeted items in single query
+            statement = select(DimServiceType).where(col(DimServiceType.id).in_(ids))
+            items = self.session.exec(statement).all()
+
+            # 3. Validation: Ensure all requested IDs exist
+            if len(items) != len(ids):
+                found_ids = {item.id for item in items if item.id is not None}
+                missing_ids = set(ids) - found_ids
+                self.session.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Batch aborted. IDs not found: {list(missing_ids)}"
+                )
+
+            # 4. Apply Soft-Delete to all items
+            now = datetime.now(UTC)
+            for item in items:
+                item.is_active = False
+                item.updated_at = now
+                self.session.add(item)
+
+            # 5. Atomic Commit
+            self.session.commit()
+            logger.info(f"Successfully deactivated {len(items)} service types.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Batch service type deactivation failed: {e!s}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal error during batch deactivation."
+            )

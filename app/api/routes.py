@@ -50,11 +50,15 @@ from app.services.status_service import StatusService
 from app.services.team_service import TeamService
 
 
-router = APIRouter(prefix="/v1")
+router = APIRouter(
+    prefix="/v1",
+    dependencies=[Depends(authenticate)],
+    responses={401: {"description": "Not authenticated"}}
+    )
 
 # --- 1. ADMIN & SEEDING ---
 @router.post("/seed", tags=["Admin"])
-def seed_database(username: Annotated[str, Depends(authenticate)]) -> dict[str, str]:
+def seed_database() -> dict[str, str]:
     """Requirement: Seeding data at the beginning.
     Triggers the 11-table ETL pipeline and AI enrichment.
     """
@@ -79,8 +83,7 @@ class DomainEntity(str, Enum):
 def search_database(
     # FastAPI will now render this as a dropdown in /docs
     collection_name: DomainEntity,
-    q: Annotated[str, Query(min_length=1)],
-    username: Annotated[str, Depends(authenticate)]
+    q: Annotated[str, Query(min_length=1)]
 ) -> list[dict[str, Any]]:
     """Requirement: Vector DB Search.
     Select a domain entity from the dropdown to search within that specific collection.
@@ -91,8 +94,7 @@ def search_database(
 
 @router.get("/search/global", tags=["Global Search in All Domain Entities"])
 def global_search(
-    q: Annotated[str, Query(min_length=1)],
-    username: Annotated[str, Depends(authenticate)]
+    q: Annotated[str, Query(min_length=1)]
 ) -> list[dict[str, Any]]:
     """Search across Teams, Assets, Environments, etc. simultaneously.
     Each result includes an 'entity_type' field.
@@ -105,7 +107,6 @@ def global_search(
 @router.get("/comprehensive-metrics", tags=["Gold Layer - Analytics"])
 def read_comprehensive_metrics(
     session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)],
     provider_name: Annotated[
         str,
         Query(
@@ -128,7 +129,6 @@ def read_comprehensive_metrics(
 @router.get("/assets/utilization", tags=["Gold Layer - Analytics"])
 def search_assets_utilization(
     session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)],
     provider_name: Annotated[
         str,
         Query(
@@ -144,8 +144,7 @@ def search_assets_utilization(
 
 @router.get("/costs/team-report", tags=["Gold Layer - Analytics"])
 def get_team_costs(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[TeamCost]:
     """Monthly cloud spend rollup by department or team for chargeback reporting."""
     service = GoldSearchService(session)
@@ -154,8 +153,7 @@ def get_team_costs(
 
 @router.get("/security/compliance", tags=["Gold Layer - Analytics"])
 def get_security_posture(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[SecurityCompliance]:
     """Identifies 'Mission Critical' assets in 'Production' that need immediate attention.
     This report identifies assets currently in Stopped, Maintenance, or Terminated states.
@@ -166,7 +164,6 @@ def get_security_posture(
 @router.get("/efficiency/waste-analysis", tags=["Gold Layer - Analytics"])
 def get_efficiency(
     session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)],
     waste_category: Annotated[
         str,
         Query(
@@ -187,8 +184,7 @@ def get_efficiency(
 @router.post("/assets/", tags=["Dimensions - Assets"], status_code=status.HTTP_201_CREATED)
 def create_asset(
     data: AssetDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> AssetDomain:
     """Full CRUD: Persists a single cloud infrastructure asset."""
     service = AssetService(session)
@@ -197,8 +193,7 @@ def create_asset(
 @router.post("/assets/batch", tags=["Dimensions - Assets"], status_code=status.HTTP_201_CREATED)
 def create_assets_batch(
     data: list[AssetDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[AssetDomain]:
     """Requirement: Batch CRUD. Ingests multiple assets in one transaction."""
     service = AssetService(session)
@@ -206,8 +201,7 @@ def create_assets_batch(
 
 @router.get("/assets/", tags=["Dimensions - Assets"])
 def get_all_assets(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[AssetDomain]:
     """Full CRUD: Retrieves all assets registered in the Silver layer."""
     service = AssetService(session)
@@ -216,22 +210,20 @@ def get_all_assets(
 @router.get("/assets/{id}", tags=["Dimensions - Assets"])
 def get_asset(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> AssetDomain:
     """Full CRUD: Retrieves a single asset by primary key ID."""
     service = AssetService(session)
-    db_obj = service.get_asset(id)
+    db_obj = service._get_dim_asset_or_404(id)
     if not db_obj:
         raise HTTPException(status_code=404, detail="Asset not found")
-    return db_obj
+    return service._map_to_domain(db_obj)
 
 @router.put("/assets/{id}", tags=["Dimensions - Assets"])
 def update_asset(
     id: int,
     data: AssetDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> AssetDomain:
     """Full CRUD: Updates an existing asset's metadata."""
     service = AssetService(session)
@@ -240,8 +232,7 @@ def update_asset(
 @router.put("/assets/batch", tags=["Dimensions - Assets"])
 def update_assets_batch(
     data: list[AssetDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[AssetDomain]:
     """Requirement: Batch CRUD. Updates multiple assets using their serial numbers."""
     service = AssetService(session)
@@ -250,8 +241,7 @@ def update_assets_batch(
 @router.delete("/assets/{id}", tags=["Dimensions - Assets"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_asset(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes an asset from the database."""
     service = AssetService(session)
@@ -261,8 +251,7 @@ def delete_asset(
 @router.post("/assets/delete/batch", tags=["Dimensions - Assets"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_assets_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes assets by primary key IDs."""
     service = AssetService(session)
@@ -273,37 +262,73 @@ def delete_assets_batch(
 @router.post("/cost-centers/", tags=["Dimensions - Cost Center"], status_code=status.HTTP_201_CREATED)
 def create_cost_center(
     data: CostCenterDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> CostCenterDomain:
     """Full CRUD: Persists a single financial cost center."""
     service = CostCenterService(session)
     return service.create_cost_center(data)
 
-@router.post("/cost-centers/batch", tags=["Dimensions - Cost Center"], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/cost-centers/batch",
+    tags=["Dimensions - Cost Center"],
+    status_code=status.HTTP_201_CREATED
+)
 def create_cost_centers_batch(
     data: list[CostCenterDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[CostCenterDomain]:
-    """Requirement: Batch CRUD. Ingests multiple cost centers in one transaction."""
+    """Batch CRUD: Persists multiple cost centers in a single atomic transaction.
+
+    This endpoint facilitates high-volume ingestion of financial metadata into
+    the Silver layer. It enforces business key uniqueness by checking for existing
+    center codes before insertion.
+
+    The operation is atomic: if any cost center in the batch fails validation or
+    encounters a database constraint violation, the entire transaction is
+    rolled back to ensure data integrity.
+
+    Args:
+        data (list[CostCenterDomain]): A list of cost center entities to be created.
+        session (Session): Database session provided by dependency injection.
+
+    Returns:
+        list[CostCenterDomain]: The list of created cost centers, including
+        database-generated primary keys and timestamps.
+    """
     service = CostCenterService(session)
     return service.create_cost_centers_batch(data)
 
-@router.get("/cost-centers/", tags=["Dimensions - Cost Center"])
+@router.get(
+    "/cost-centers/",
+    tags=["Dimensions - Cost Center"]
+)
 def get_all_cost_centers(
     session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    limit: int = 100,
+    offset: int = 0
 ) -> list[CostCenterDomain]:
-    """Full CRUD: Retrieves all cost centers registered in the Silver layer."""
+    """Full CRUD: Retrieves all cost centers registered in the Silver layer.
+
+    This endpoint supports pagination via limit and offset parameters to
+    ensure high performance when handling large organizational structures.
+    Results are sorted by center code for UI consistency.
+
+    Args:
+        session (Session): Database session provided by dependency injection.
+        limit (int): The maximum number of records to return.
+        offset (int): The number of records to skip (for pagination).
+
+    Returns:
+        list[CostCenterDomain]: A list of cost center domain representations.
+    """
     service = CostCenterService(session)
-    return service.get_all_cost_centers()
+    return service.get_all_cost_centers(limit=limit, offset=offset)
+
 
 @router.get("/cost-centers/{id}", tags=["Dimensions - Cost Center"])
 def get_cost_center(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> CostCenterDomain:
     """Full CRUD: Retrieves a single cost center by primary key ID."""
     service = CostCenterService(session)
@@ -316,8 +341,7 @@ def get_cost_center(
 def update_cost_center(
     id: int,
     data: CostCenterDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> CostCenterDomain:
     """Full CRUD: Updates an existing cost center's budget or department."""
     service = CostCenterService(session)
@@ -326,8 +350,7 @@ def update_cost_center(
 @router.put("/cost-centers/batch", tags=["Dimensions - Cost Center"])
 def update_cost_centers_batch(
     data: list[CostCenterDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[CostCenterDomain]:
     """Requirement: Batch CRUD. Updates multiple centers using their center_code."""
     service = CostCenterService(session)
@@ -336,8 +359,7 @@ def update_cost_centers_batch(
 @router.delete("/cost-centers/{id}", tags=["Dimensions - Cost Center"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_cost_center(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a cost center from the database."""
     service = CostCenterService(session)
@@ -347,8 +369,7 @@ def delete_cost_center(
 @router.post("/cost-centers/delete/batch", tags=["Dimensions - Cost Center"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_cost_centers_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes cost centers by primary key IDs."""
     service = CostCenterService(session)
@@ -359,8 +380,7 @@ def delete_cost_centers_batch(
 @router.post("/environments/", tags=["Dimensions - Environment"], status_code=status.HTTP_201_CREATED)
 def create_environment(
     data: EnvironmentDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> EnvironmentDomain:
     """Full CRUD: Persists a single deployment environment."""
     service = EnvironmentService(session)
@@ -369,8 +389,7 @@ def create_environment(
 @router.post("/environments/batch", tags=["Dimensions - Environment"], status_code=status.HTTP_201_CREATED)
 def create_environments_batch(
     data: list[EnvironmentDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[EnvironmentDomain]:
     """Requirement: Batch CRUD. Ingests multiple environments in one transaction."""
     service = EnvironmentService(session)
@@ -378,8 +397,7 @@ def create_environments_batch(
 
 @router.get("/environments/", tags=["Dimensions - Environment"])
 def get_all_environments(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[EnvironmentDomain]:
     """Full CRUD: Retrieves all registered environments."""
     service = EnvironmentService(session)
@@ -388,8 +406,7 @@ def get_all_environments(
 @router.get("/environments/{id}", tags=["Dimensions - Environment"])
 def get_environment(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> EnvironmentDomain:
     """Full CRUD: Retrieves a single environment by primary key ID."""
     service = EnvironmentService(session)
@@ -402,8 +419,7 @@ def get_environment(
 def update_environment(
     id: int,
     data: EnvironmentDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> EnvironmentDomain:
     """Full CRUD: Updates an existing environment record."""
     service = EnvironmentService(session)
@@ -412,8 +428,7 @@ def update_environment(
 @router.put("/environments/batch", tags=["Dimensions - Environment"])
 def update_environments_batch(
     data: list[EnvironmentDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[EnvironmentDomain]:
     """Requirement: Batch CRUD. Updates multiple environments using their env_name."""
     service = EnvironmentService(session)
@@ -422,8 +437,7 @@ def update_environments_batch(
 @router.delete("/environments/{id}", tags=["Dimensions - Environment"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_environment(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a single environment from the system."""
     service = EnvironmentService(session)
@@ -433,8 +447,7 @@ def delete_environment(
 @router.post("/environments/delete/batch", tags=["Dimensions - Environment"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_environments_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes environments by primary key IDs."""
     service = EnvironmentService(session)
@@ -445,8 +458,7 @@ def delete_environments_batch(
 @router.post("/hardware-profiles/", tags=["Dimensions - Hardware Profile"], status_code=status.HTTP_201_CREATED)
 def create_hardware_profile(
     data: HardwareProfileDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> HardwareProfileDomain:
     """Full CRUD: Persists a single hardware profile specification."""
     service = HardwareProfileService(session)
@@ -455,8 +467,7 @@ def create_hardware_profile(
 @router.post("/hardware-profiles/batch", tags=["Dimensions - Hardware Profile"], status_code=status.HTTP_201_CREATED)
 def create_hardware_profiles_batch(
     data: list[HardwareProfileDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[HardwareProfileDomain]:
     """Requirement: Batch CRUD. Ingests multiple hardware profiles in one transaction."""
     service = HardwareProfileService(session)
@@ -464,8 +475,7 @@ def create_hardware_profiles_batch(
 
 @router.get("/hardware-profiles/", tags=["Dimensions - Hardware Profile"])
 def get_all_hardware_profiles(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[HardwareProfileDomain]:
     """Full CRUD: Retrieves all registered hardware profiles."""
     service = HardwareProfileService(session)
@@ -474,8 +484,7 @@ def get_all_hardware_profiles(
 @router.get("/hardware-profiles/{id}", tags=["Dimensions - Hardware Profile"])
 def get_hardware_profile(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> HardwareProfileDomain:
     """Full CRUD: Retrieves a single hardware profile by primary key ID."""
     service = HardwareProfileService(session)
@@ -488,8 +497,7 @@ def get_hardware_profile(
 def update_hardware_profile(
     id: int,
     data: HardwareProfileDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> HardwareProfileDomain:
     """Full CRUD: Updates an existing hardware profile record."""
     service = HardwareProfileService(session)
@@ -498,8 +506,7 @@ def update_hardware_profile(
 @router.put("/hardware-profiles/batch", tags=["Dimensions - Hardware Profile"])
 def update_hardware_profiles_batch(
     data: list[HardwareProfileDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[HardwareProfileDomain]:
     """Requirement: Batch CRUD. Updates multiple hardware profiles using their profile_name."""
     service = HardwareProfileService(session)
@@ -508,8 +515,7 @@ def update_hardware_profiles_batch(
 @router.delete("/hardware-profiles/{id}", tags=["Dimensions - Hardware Profile"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_hardware_profile(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a single hardware profile from the system."""
     service = HardwareProfileService(session)
@@ -519,8 +525,7 @@ def delete_hardware_profile(
 @router.post("/hardware-profiles/delete/batch", tags=["Dimensions - Hardware Profile"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_hardware_profiles_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes hardware profiles by primary key IDs."""
     service = HardwareProfileService(session)
@@ -531,8 +536,7 @@ def delete_hardware_profiles_batch(
 @router.post("/providers/", tags=["Dimensions - Provider"], status_code=status.HTTP_201_CREATED)
 def create_provider(
     data: ProviderDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> ProviderDomain:
     """Full CRUD: Persists a single cloud infrastructure provider."""
     service = ProviderService(session)
@@ -541,8 +545,7 @@ def create_provider(
 @router.post("/providers/batch", tags=["Dimensions - Provider"], status_code=status.HTTP_201_CREATED)
 def create_providers_batch(
     data: list[ProviderDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[ProviderDomain]:
     """Requirement: Batch CRUD. Ingests multiple providers in one transaction."""
     service = ProviderService(session)
@@ -550,8 +553,7 @@ def create_providers_batch(
 
 @router.get("/providers/", tags=["Dimensions - Provider"])
 def get_all_providers(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[ProviderDomain]:
     """Full CRUD: Retrieves all registered cloud providers."""
     service = ProviderService(session)
@@ -560,8 +562,7 @@ def get_all_providers(
 @router.get("/providers/{id}", tags=["Dimensions - Provider"])
 def get_provider(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> ProviderDomain:
     """Full CRUD: Retrieves a single provider by primary key ID."""
     service = ProviderService(session)
@@ -574,8 +575,7 @@ def get_provider(
 def update_provider(
     id: int,
     data: ProviderDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> ProviderDomain:
     """Full CRUD: Updates an existing cloud provider record."""
     service = ProviderService(session)
@@ -584,8 +584,7 @@ def update_provider(
 @router.put("/providers/batch", tags=["Dimensions - Provider"])
 def update_providers_batch(
     data: list[ProviderDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[ProviderDomain]:
     """Requirement: Batch CRUD. Updates multiple providers using their provider_name."""
     service = ProviderService(session)
@@ -594,8 +593,7 @@ def update_providers_batch(
 @router.delete("/providers/{id}", tags=["Dimensions - Provider"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_provider(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a single cloud provider from the system."""
     service = ProviderService(session)
@@ -605,8 +603,7 @@ def delete_provider(
 @router.post("/providers/delete/batch", tags=["Dimensions - Provider"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_providers_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes cloud providers by primary key IDs."""
     service = ProviderService(session)
@@ -617,8 +614,7 @@ def delete_providers_batch(
 @router.post("/regions/", tags=["Dimensions - Region"], status_code=status.HTTP_201_CREATED)
 def create_region(
     data: RegionDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> RegionDomain:
     """Full CRUD: Persists a single geographic or logical cloud region."""
     service = RegionService(session)
@@ -627,8 +623,7 @@ def create_region(
 @router.post("/regions/batch", tags=["Dimensions - Region"], status_code=status.HTTP_201_CREATED)
 def create_regions_batch(
     data: list[RegionDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[RegionDomain]:
     """Requirement: Batch CRUD. Ingests multiple regions in one transaction."""
     service = RegionService(session)
@@ -636,8 +631,7 @@ def create_regions_batch(
 
 @router.get("/regions/", tags=["Dimensions - Region"])
 def get_all_regions(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[RegionDomain]:
     """Full CRUD: Retrieves all registered cloud regions."""
     service = RegionService(session)
@@ -646,8 +640,7 @@ def get_all_regions(
 @router.get("/regions/{id}", tags=["Dimensions - Region"])
 def get_region(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> RegionDomain:
     """Full CRUD: Retrieves a single region by primary key ID."""
     service = RegionService(session)
@@ -660,8 +653,7 @@ def get_region(
 def update_region(
     id: int,
     data: RegionDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> RegionDomain:
     """Full CRUD: Updates an existing region record."""
     service = RegionService(session)
@@ -670,8 +662,7 @@ def update_region(
 @router.put("/regions/batch", tags=["Dimensions - Region"])
 def update_regions_batch(
     data: list[RegionDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[RegionDomain]:
     """Requirement: Batch CRUD. Updates multiple regions using their region_code."""
     service = RegionService(session)
@@ -680,8 +671,7 @@ def update_regions_batch(
 @router.delete("/regions/{id}", tags=["Dimensions - Region"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_region(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a single region from the system."""
     service = RegionService(session)
@@ -691,8 +681,7 @@ def delete_region(
 @router.post("/regions/delete/batch", tags=["Dimensions - Region"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_regions_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes regions by primary key IDs."""
     service = RegionService(session)
@@ -703,8 +692,7 @@ def delete_regions_batch(
 @router.post("/security-tiers/", tags=["Dimensions - Security Tier"], status_code=status.HTTP_201_CREATED)
 def create_security_tier(
     data: SecurityTierDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> SecurityTierDomain:
     """Full CRUD: Persists a single security and compliance tier."""
     service = SecurityTierService(session)
@@ -713,8 +701,7 @@ def create_security_tier(
 @router.post("/security-tiers/batch", tags=["Dimensions - Security Tier"], status_code=status.HTTP_201_CREATED)
 def create_security_tiers_batch(
     data: list[SecurityTierDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[SecurityTierDomain]:
     """Requirement: Batch CRUD. Ingests multiple security tiers in one transaction."""
     service = SecurityTierService(session)
@@ -722,8 +709,7 @@ def create_security_tiers_batch(
 
 @router.get("/security-tiers/", tags=["Dimensions - Security Tier"])
 def get_all_security_tiers(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[SecurityTierDomain]:
     """Full CRUD: Retrieves all registered security tiers."""
     service = SecurityTierService(session)
@@ -732,8 +718,7 @@ def get_all_security_tiers(
 @router.get("/security-tiers/{id}", tags=["Dimensions - Security Tier"])
 def get_security_tier(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> SecurityTierDomain:
     """Full CRUD: Retrieves a single security tier by primary key ID."""
     service = SecurityTierService(session)
@@ -746,8 +731,7 @@ def get_security_tier(
 def update_security_tier(
     id: int,
     data: SecurityTierDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> SecurityTierDomain:
     """Full CRUD: Updates an existing security tier record."""
     service = SecurityTierService(session)
@@ -756,8 +740,7 @@ def update_security_tier(
 @router.put("/security-tiers/batch", tags=["Dimensions - Security Tier"])
 def update_security_tiers_batch(
     data: list[SecurityTierDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[SecurityTierDomain]:
     """Requirement: Batch CRUD. Updates multiple security tiers using their tier_name."""
     service = SecurityTierService(session)
@@ -766,8 +749,7 @@ def update_security_tiers_batch(
 @router.delete("/security-tiers/{id}", tags=["Dimensions - Security Tier"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_security_tier(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a single security tier from the system."""
     service = SecurityTierService(session)
@@ -777,8 +759,7 @@ def delete_security_tier(
 @router.post("/security-tiers/delete/batch", tags=["Dimensions - Security Tier"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_security_tiers_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes security tiers by primary key IDs."""
     service = SecurityTierService(session)
@@ -789,8 +770,7 @@ def delete_security_tiers_batch(
 @router.post("/service-types/", tags=["Dimensions - Service Type"], status_code=status.HTTP_201_CREATED)
 def create_service_type(
     data: ServiceTypeDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> ServiceTypeDomain:
     """Full CRUD: Persists a single technical service classification."""
     service = ServiceTypeService(session)
@@ -799,8 +779,7 @@ def create_service_type(
 @router.post("/service-types/batch", tags=["Dimensions - Service Type"], status_code=status.HTTP_201_CREATED)
 def create_service_types_batch(
     data: list[ServiceTypeDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[ServiceTypeDomain]:
     """Requirement: Batch CRUD. Ingests multiple service types in one transaction."""
     service = ServiceTypeService(session)
@@ -808,8 +787,7 @@ def create_service_types_batch(
 
 @router.get("/service-types/", tags=["Dimensions - Service Type"])
 def get_all_service_types(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[ServiceTypeDomain]:
     """Full CRUD: Retrieves the catalog of all service classifications."""
     service = ServiceTypeService(session)
@@ -818,8 +796,7 @@ def get_all_service_types(
 @router.get("/service-types/{id}", tags=["Dimensions - Service Type"])
 def get_service_type(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> ServiceTypeDomain:
     """Full CRUD: Retrieves a single service type by primary key ID."""
     service = ServiceTypeService(session)
@@ -832,8 +809,7 @@ def get_service_type(
 def update_service_type(
     id: int,
     data: ServiceTypeDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> ServiceTypeDomain:
     """Full CRUD: Updates an existing service classification record."""
     service = ServiceTypeService(session)
@@ -842,8 +818,7 @@ def update_service_type(
 @router.put("/service-types/batch", tags=["Dimensions - Service Type"])
 def update_service_types_batch(
     data: list[ServiceTypeDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[ServiceTypeDomain]:
     """Requirement: Batch CRUD. Updates multiple service types using their service_name."""
     service = ServiceTypeService(session)
@@ -852,8 +827,7 @@ def update_service_types_batch(
 @router.delete("/service-types/{id}", tags=["Dimensions - Service Type"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_service_type(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a single service type from the system."""
     service = ServiceTypeService(session)
@@ -863,8 +837,7 @@ def delete_service_type(
 @router.post("/service-types/delete/batch", tags=["Dimensions - Service Type"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_service_types_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes service types by primary key IDs."""
     service = ServiceTypeService(session)
@@ -874,8 +847,7 @@ def delete_service_types_batch(
 # --- Status ---
 def create_status(
     data: StatusDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> StatusDomain:
     """Creates a new status entry in the dimension table.
 
@@ -893,8 +865,7 @@ def create_status(
 @router.post("/statuses/batch", tags=["Dimensions - Status"], status_code=status.HTTP_201_CREATED)
 def create_statuses_batch(
     data: list[StatusDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[StatusDomain]:
     """Creates multiple status entries in a single batch operation.
 
@@ -910,7 +881,7 @@ def create_statuses_batch(
     return service.create_statuses_batch(data)
 
 @router.get("/statuses/", tags=["Dimensions - Status"])
-def get_all_statuses(session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)]) -> list[StatusDomain]:
+def get_all_statuses(session: Annotated[Session, Depends(get_session)]) -> list[StatusDomain]:
     """Retrieves all status entries from the dimension table.
 
     Args:
@@ -924,7 +895,7 @@ def get_all_statuses(session: Annotated[Session, Depends(get_session)], username
     return service.get_all_statuses()
 
 @router.get("/statuses/{id}", tags=["Dimensions - Status"])
-def get_status(id: int, session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)]) -> StatusDomain:
+def get_status(id: int, session: Annotated[Session, Depends(get_session)]) -> StatusDomain:
     """Retrieves a specific status entry by its unique identifier.
 
     Args:
@@ -948,8 +919,7 @@ def get_status(id: int, session: Annotated[Session, Depends(get_session)], usern
 def update_status(
     id: int,
     data: StatusDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> StatusDomain:
     """Updates an existing status entry by its ID.
 
@@ -968,8 +938,7 @@ def update_status(
 @router.put("/statuses/batch", tags=["Dimensions - Status"])
 def update_statuses_batch(
     data: list[StatusDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[StatusDomain]:
     """Updates multiple status entries in a single batch operation.
 
@@ -985,7 +954,7 @@ def update_statuses_batch(
     return service.update_statuses_batch(data)
 
 @router.delete("/statuses/{id}", tags=["Dimensions - Status"], status_code=status.HTTP_204_NO_CONTENT)
-def delete_status(id: int, session: Annotated[Session, Depends(get_session)], username: Annotated[str, Depends(authenticate)]) -> None:
+def delete_status(id: int, session: Annotated[Session, Depends(get_session)]) -> None:
     """Removes a specific status entry from the dimension table.
 
     Args:
@@ -1003,8 +972,7 @@ def delete_status(id: int, session: Annotated[Session, Depends(get_session)], us
 @router.post("/statuses/delete/batch", tags=["Dimensions - Status"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_statuses_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Removes multiple status entries identified by a list of IDs.
 
@@ -1024,8 +992,7 @@ def delete_statuses_batch(
 @router.post("/teams/", tags=["Dimensions - Team"], status_code=status.HTTP_201_CREATED)
 def create_team(
     data: TeamDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> TeamDomain:
     """Full CRUD: Persists a single organizational team."""
     service = TeamService(session)
@@ -1034,8 +1001,7 @@ def create_team(
 @router.post("/teams/batch", tags=["Dimensions - Team"], status_code=status.HTTP_201_CREATED)
 def create_teams_batch(
     data: list[TeamDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[TeamDomain]:
     """Requirement: Batch CRUD. Ingests multiple teams in one transaction."""
     service = TeamService(session)
@@ -1043,8 +1009,7 @@ def create_teams_batch(
 
 @router.get("/teams/", tags=["Dimensions - Team"])
 def get_all_teams(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[TeamDomain]:
     """Full CRUD: Retrieves all registered organizational teams."""
     service = TeamService(session)
@@ -1053,8 +1018,7 @@ def get_all_teams(
 @router.get("/teams/{id}", tags=["Dimensions - Team"])
 def get_team(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> TeamDomain:
     """Full CRUD: Retrieves a single team by primary key ID."""
     service = TeamService(session)
@@ -1067,8 +1031,7 @@ def get_team(
 def update_team(
     id: int,
     data: TeamDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> TeamDomain:
     """Full CRUD: Updates an existing team record."""
     service = TeamService(session)
@@ -1077,8 +1040,7 @@ def update_team(
 @router.put("/teams/batch", tags=["Dimensions - Team"])
 def update_teams_batch(
     data: list[TeamDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[TeamDomain]:
     """Requirement: Batch CRUD. Updates multiple teams using their team_name."""
     service = TeamService(session)
@@ -1087,8 +1049,7 @@ def update_teams_batch(
 @router.delete("/teams/{id}", tags=["Dimensions - Team"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_team(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a single team from the system."""
     service = TeamService(session)
@@ -1098,8 +1059,7 @@ def delete_team(
 @router.post("/teams/delete/batch", tags=["Dimensions - Team"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_teams_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes teams by primary key IDs."""
     service = TeamService(session)
@@ -1110,8 +1070,7 @@ def delete_teams_batch(
 @router.post("/metrics/", tags=["Metrics"], status_code=status.HTTP_201_CREATED)
 def ingest_metric(
     data: MetricEntryDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> MetricEntryDomain:
     """Full CRUD: Ingests a single performance metric snapshot."""
     service = MetricService(session)
@@ -1120,8 +1079,7 @@ def ingest_metric(
 @router.post("/metrics/batch", tags=["Metrics"], status_code=status.HTTP_201_CREATED)
 def ingest_metrics_batch(
     data: list[MetricEntryDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[MetricEntryDomain]:
     """Requirement: Batch CRUD. Ingests multiple metric snapshots in one transaction."""
     service = MetricService(session)
@@ -1129,8 +1087,7 @@ def ingest_metrics_batch(
 
 @router.get("/metrics/", tags=["Metrics"])
 def get_all_metrics(
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[MetricEntryDomain]:
     """Full CRUD: Retrieves all metric entries from the Silver layer."""
     service = MetricService(session)
@@ -1139,8 +1096,7 @@ def get_all_metrics(
 @router.get("/metrics/{id}", tags=["Metrics"])
 def get_metric(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> MetricEntryDomain:
     """Full CRUD: Retrieves a single metric entry by primary key ID."""
     service = MetricService(session)
@@ -1153,8 +1109,7 @@ def get_metric(
 def update_metric(
     id: int,
     data: MetricEntryDomain,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> MetricEntryDomain:
     """Full CRUD: Updates an existing metric entry record."""
     service = MetricService(session)
@@ -1163,8 +1118,7 @@ def update_metric(
 @router.put("/metrics/batch", tags=["Metrics"])
 def update_metrics_batch(
     data: list[MetricEntryDomain],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> list[MetricEntryDomain]:
     """Requirement: Batch CRUD. Updates multiple metric entries in one transaction."""
     service = MetricService(session)
@@ -1173,8 +1127,7 @@ def update_metrics_batch(
 @router.delete("/metrics/{id}", tags=["Metrics"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_metric(
     id: int,
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Full CRUD: Removes a single metric entry from the system."""
     service = MetricService(session)
@@ -1184,12 +1137,10 @@ def delete_metric(
 @router.post("/metrics/delete/batch", tags=["Metrics"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_metrics_batch(
     ids: list[int],
-    session: Annotated[Session, Depends(get_session)],
-    username: Annotated[str, Depends(authenticate)]
+    session: Annotated[Session, Depends(get_session)]
 ) -> None:
     """Requirement: Batch CRUD. Bulk deletes metric entries by primary key IDs."""
     service = MetricService(session)
     service.delete_metrics_batch(ids)
     return None
-
 
